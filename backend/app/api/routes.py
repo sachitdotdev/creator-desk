@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from app.database import SessionLocal
 from app.database import get_db
 from app.services.whisper_service import WhisperService
 from app.services.llm_service import LLMService
