@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/venv/
+__pycache__/
+*.pyc
+
+# Video Files (Source and Rendered)
+backend/data/
+backend/backend/data/
+*.mp4
+*.webm
+*.mkv
+*.avi
+
+# Environment and DB
+.env
+*.db
+*.sqlite
