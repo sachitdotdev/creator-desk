@@ -152,7 +152,7 @@ class LLMService:
         """Call Ollama and return parsed clip list, with a fail-safe fallback."""
         # Build transcript text with timestamps
         transcript_text = "\n".join(
-            f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text']}"
+            f"[{s.start:.1f}s - {s.end:.1f}s] {s.text}"
             for s in transcript_segments
         )
         transcript_text = transcript_text[:15000]
@@ -250,8 +250,8 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
             return []
 
         # Find the range of the transcript
-        starts = [s['start'] for s in transcript_segments]
-        ends = [s['end'] for s in transcript_segments]
+        starts = [s.start for s in transcript_segments]
+        ends = [s.end for s in transcript_segments]
         min_start = min(starts)
         max_end = max(ends)
         duration = max_end - min_start
