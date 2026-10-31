@@ -45,27 +45,59 @@ async def upload_video(
 
 
 def _run_pipeline(video_id: str, db: Session):
-    # Get the video from the database
-    video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    try:
+        # Get the video from the database
+        video = db.query(models.Video).filter(models.Video.id == video_id).first()
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
 
-    # Call WhisperService to transcribe the video
-    whisper_result = WhisperService.transcribe(video)
-    video.status = "transcribed"
-    db.add(video)
-    db.commit()
+        # Call WhisperService to transcribe the video
+        whisper_result = WhisperService().transcribe(video.path)
+        video.status = "transcribed"
+        db.add(video)
+        db.commit()
 
-    # Call LLMService to generate clips
-    clips = LLMService.generate_clips(video)
+        # Call LLMService to generate clips
+        clips = LLMService().generate_clips(
+            transcript_segments=whisper_result.segments,
+            num_clips=5,
+            vibe="Streamer Hype",
+        )
 
-    # Render the clips using RenderService
-    rendered_clips = RenderService.render_clips(clips)
+        # Loop through clips, create Clip records, and render each one
+        for clip_data in clips:
+            clip = models.Clip(
+                video_id=video.id,
+                start_time=clip_data["start"],
+                end_time=clip_data["end"],
+                duration=clip_data["end"] - clip_data["start"],
+                title=clip_data.get("title", ""),
+                description=clip_data.get("description", ""),
+                hashtags=", ".join(clip_data.get("hashtags", [])),
+                hook=clip_data.get("hook", ""),
+                confidence=clip_data.get("confidence", 0.0),
+                composite_score=clip_data.get("composite_score", 0.0),
+                vibe_category=clip_data.get("vibe_category", "Custom"),
+                status="pending",
+            )
+            db.add(clip)
+            db.commit()
+            db.refresh(clip)
 
-    # Save the clips to the database
-    for clip in rendered_clips:
-        db.add(models.Clip(video_id=video.id, **clip))
-    db.commit()
+            # Render each clip
+            RenderService(db).render_clip(clip, video)
+
+        # Update video status to done
+        video.status = "done"
+        db.add(video)
+        db.commit()
+
+    except Exception as exc:
+        # Set status to error if anything fails
+        video.status = "error"
+        video.error_message = str(exc)
+        db.add(video)
+        db.commit()
 
 @router.get("/videos/{video_id}/clips")
 def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
