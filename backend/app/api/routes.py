@@ -44,7 +44,14 @@ async def upload_video(
 
 
 
-def _run_pipeline(video_id: str, db: Session):
+
+@router.post("/videos/{video_id}/process")
+async def process_video(video_id: str, background_tasks: BackgroundTasks):
+    background_tasks.add_task(_run_pipeline, video_id)
+    return {"message": "Processing started", "video_id": video_id}
+
+def _run_pipeline(video_id: str):
+    db = SessionLocal()
     try:
         # Get the video from the database
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
@@ -98,6 +105,8 @@ def _run_pipeline(video_id: str, db: Session):
         video.error_message = str(exc)
         db.add(video)
         db.commit()
+    finally:
+        db.close()
 
 @router.get("/videos/{video_id}/clips")
 def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
