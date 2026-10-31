@@ -107,7 +107,7 @@ async def _run_pipeline(video_id: str):
 
     except Exception as exc:
         # Set status to error if anything fails
-        print(f"PIPELINE CRASHED: {e}", flush=True)
+        print(f"PIPELINE CRASHED: {exc}", flush=True)
         print(traceback.format_exc(), flush=True)
         video.status = "error"
         video.error_message = str(exc)
