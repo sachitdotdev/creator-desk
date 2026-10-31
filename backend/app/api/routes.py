@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
+import traceback
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.database import get_db
@@ -52,6 +53,7 @@ async def process_video(video_id: str, background_tasks: BackgroundTasks):
     return {"message": "Processing started", "video_id": video_id}
 
 async def _run_pipeline(video_id: str):
+    print("DEBUG: Pipeline started", flush=True)
     db = SessionLocal()
     try:
         # Get the video from the database
@@ -59,12 +61,14 @@ async def _run_pipeline(video_id: str):
         if not video:
             raise HTTPException(status_code=404, detail="Video not found")
 
+        print("DEBUG: Starting transcription", flush=True)
         # Call WhisperService to transcribe the video
         whisper_result = WhisperService().transcribe(video.path)
         video.status = "transcribed"
         db.add(video)
         db.commit()
 
+        print("DEBUG: Starting LLM clip generation", flush=True)
         # Call LLMService to generate clips
         clips = await LLMService().generate_clips(
             transcript_segments=whisper_result.segments,
@@ -72,6 +76,7 @@ async def _run_pipeline(video_id: str):
             vibe="Streamer Hype",
         )
 
+        print("DEBUG: Starting rendering", flush=True)
         # Loop through clips, create Clip records, and render each one
         for clip_data in clips:
             clip = models.Clip(
@@ -102,6 +107,8 @@ async def _run_pipeline(video_id: str):
 
     except Exception as exc:
         # Set status to error if anything fails
+        print(f"PIPELINE CRASHED: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         video.status = "error"
         video.error_message = str(exc)
         db.add(video)
