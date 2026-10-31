@@ -51,7 +51,7 @@ async def process_video(video_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_pipeline, video_id)
     return {"message": "Processing started", "video_id": video_id}
 
-def _run_pipeline(video_id: str):
+async def _run_pipeline(video_id: str):
     db = SessionLocal()
     try:
         # Get the video from the database
@@ -66,7 +66,7 @@ def _run_pipeline(video_id: str):
         db.commit()
 
         # Call LLMService to generate clips
-        clips = LLMService().generate_clips(
+        clips = await LLMService().generate_clips(
             transcript_segments=whisper_result.segments,
             num_clips=5,
             vibe="Streamer Hype",
