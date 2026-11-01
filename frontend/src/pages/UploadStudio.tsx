@@ -120,7 +120,7 @@ export default function UploadStudio() {
         <div className="mt-6">
           <h2 className="text-xl font-bold text-white mb-4">Recent Videos</h2>
           <div className="space-y-2">
-            {videos.map(v => <VideoRow key={v.id} video={v} isSelected={selectedVideoId === video.id} onSelect={() => setSelectedVideoId(v.id)} />)}
+            {videos.map(v => <VideoRow key={v.id} video={v} isSelected={selectedVideoId === v.id} onSelect={() => setSelectedVideoId(v.id)} />)}
             {videos.length === 0 && <p className="text-slate-500 text-sm">No videos yet.</p>}
           </div>
         </div>
