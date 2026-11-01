@@ -42,6 +42,7 @@ async def upload_video(
     db.add(new_video)
     db.commit()
     db.refresh(new_video)
+    print(f"UPLOAD SUCCESS: Saved video {new_video.id} - {new_video.filename}", flush=True)
     return new_video.id
 
 
