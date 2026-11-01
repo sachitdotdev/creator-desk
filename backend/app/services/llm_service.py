@@ -14,7 +14,7 @@ from app.core.config import OLLAMA_BASE_URL, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_A
 
 
 # Strong system prompt tuned for short-form clip selection + copy generation.
-SYSTEM_PROMPT = """CRITICAL: You MUST generate clips that are between 61 and 90 seconds long. Do not generate clips shorter than 60 seconds.
+SYSTEM_PROMPT = """CRITICAL: You MUST generate clips that are between 15 and 45 seconds long. Do not generate clips shorter than 15 seconds.
 You are an expert short-form video editor and social-media strategist.
 Your job is to watch a video transcript (with timestamps) and pick the BEST 4-5 short clips
 suitable for TikTok / Instagram Reels / YouTube Shorts (vertical 9:16).
@@ -32,7 +32,7 @@ For each clip you must return:
 - composite_score: float 0-1 (overall quality score)
 
 Selection rules:
-- Generate clips strictly between 60.5 seconds and 90.0 seconds.
+- Generate clips strictly between 15.5 seconds and 45.0 seconds.
 - Ensure each clip contains a complete HOOK (0-5s), DENSE BODY (5-75s), and CTA/LOOP CLOSE (75-90s).
 - Filter out any clip where the transcript has long silent gaps or low speech density.
 - Clips must not overlap each other.
@@ -43,8 +43,8 @@ Output ONLY valid JSON, no markdown fences, no extra text:
 {
   "clips": [
     {
-      "start": 60.5,
-      "end": 90.0,
+      "start": 15.5,
+      "end": 45.0,
       "title": "...",
       "hook": "...",
       "description": "...",
@@ -192,21 +192,22 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
 
             data = resp.json()
             raw = data.get("response", "{}")
+            print(f"RAW OLLAMA RESPONSE: {raw}", flush=True)
             clips = self._parse_response(raw)
 
-            # Filter out clips shorter than 60 seconds
-            clips = [clip for clip in clips if (clip["end"] - clip["start"]) >= 60]
+            # Filter out clips shorter than 15 seconds
+            clips = [clip for clip in clips if (clip["end"] - clip["start"]) >= 15]
 
             for clip in clips:
                 duration = clip["end"] - clip["start"]
                 if duration < 60:
-                    logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 61.0s.")
-                    clip["end"] = clip["start"] + 61.0
+                    logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 30.0s.")
+                    clip["end"] = clip["start"] + 30.0
 
             return clips
         except Exception as exc:
             print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {exc}", flush=True)
-            print(f"Raw response: {raw}", flush=True)
+            print(f"Raw response: {locals().get("raw", "Raw not defined")}", flush=True)
             print(traceback.format_exc(), flush=True)
             logger.warning(f"LLM request failed ({exc}). Falling back to equal-length clips.")
             return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
@@ -261,7 +262,7 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
         duration = max_end - min_start
 
         if duration <= 0:
-            duration = 60.0
+            duration = 30.0
 
         step = duration / num_clips
         clips: List[Dict[str, Any]] = []
@@ -269,9 +270,9 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
             s = min_start + (i * step)
             e = min(s + step, max_end)
             
-            # Ensure minimum duration of 61.0 seconds
-            if e - s < 61.0:
-                e = s + 61.0
+            # Ensure minimum duration of 30.0 seconds
+            if e - s < 30.0:
+                e = s + 30.0
             
             # If even after expansion we're still too close to max_end, 
             # we might need to adjust the step or just accept slightly larger chunks
@@ -299,7 +300,7 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
         Snaps start times to the beginning of the nearest spoken word.
         Snaps end times to the end of the nearest spoken word.
         Rejects clips that contain silent gaps longer than 1.5 seconds.
-        Guarantees minimum duration of 61.0 seconds.
+        Guarantees minimum duration of 30.0 seconds.
         """
         processed_clips = []
         for clip in clips:
@@ -342,10 +343,10 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
                     break
             
             if not has_large_gap:
-                # Ensure minimum duration of 61.0 seconds
-                if clip["end"] - clip["start"] < 61.0:
-                    # Extend the end to reach 61s if possible
-                    clip["end"] = clip["start"] + 61.0
+                # Ensure minimum duration of 30.0 seconds
+                if clip["end"] - clip["start"] < 30.0:
+                    # Extend the end to reach 30s if possible
+                    clip["end"] = clip["start"] + 30.0
                 
                 processed_clips.append(clip)
         
