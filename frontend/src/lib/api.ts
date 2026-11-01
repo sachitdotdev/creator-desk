@@ -68,6 +68,9 @@ export const disconnectSocialAccount = (id: number) => api.delete(`/api/accounts
 // Export
 export const exportPackage = (clipId: number) => api.post("/api/accounts/export", { clip_id: clipId });
 
+// Trending
+export const getTrending = () => api.get("/api/trending");
+
 // Status
 export const status = () => {
   try {

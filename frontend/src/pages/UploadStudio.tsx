@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, Play } from 'lucide-react';
-import { listVideos, listTemplates, uploadVideo, processVideo } from '@/lib/api';
+import { listVideos, listTemplates, uploadVideo, processVideo, getTrending } from '@/lib/api';
 
 export function VideoRow({ video, onSelect, isSelected, navigate }: { video: any; onSelect?: () => void; isSelected?: boolean; navigate?: (path: string) => void }) {
   return (
@@ -24,8 +24,9 @@ export default function UploadStudio() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
-    listVideos().then(setVideos).catch(() => {});
-    listTemplates().then(setTemplates).catch(() => {});
+    listVideos().then(data => setVideos(Array.isArray(data) ? data : [])).catch(() => {});
+    listTemplates().then(data => setTemplates(Array.isArray(data) ? data : [])).catch(() => {});
+    getTrending().then(data => setTrending(Array.isArray(data) ? data : [])).catch(() => {});
   }, []);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -52,7 +53,7 @@ export default function UploadStudio() {
 
       const interval = setInterval(async () => {
         const data = await listVideos();
-        setVideos(data);
+        setVideos(Array.isArray(data) ? data : []);
         const currentVideo = data.find((v: any) => v.id === videoId);
         if (currentVideo && (currentVideo.status === 'done' || currentVideo.status === 'error')) {
           clearInterval(interval);
