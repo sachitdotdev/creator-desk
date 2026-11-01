@@ -142,3 +142,7 @@ def get_trending_sources():
         {"id": "v2", "title": "Speed IRL Stream", "source": "YouTube", "views": "850K", "duration": "45:10", "url": "#", "thumbnail": "https://picsum.photos/seed/v2/400/225"},
         {"id": "v3", "title": "Adin Ross Moments", "source": "Kick", "views": "2.1M", "duration": "22:30", "url": "#", "thumbnail": "https://picsum.photos/seed/v3/400/225"}
     ]
+
+@router.post("/clips/{clip_id}/render")
+def render_clip(clip_id: str):
+    return {"message": "Rendering started", "clip_id": clip_id}
