@@ -29,7 +29,7 @@ export const pipelineStatus = (id: number) => api.get(`/api/pipeline/${id}/statu
 
 // Clips
 export const listClips = (videoId?: number) => {
-  const url = videoId ? `http://127.0.0.1:8000/api/videos/${videoId}/clips` : "http://127.0.0.1:8000/api/clips";
+  const url = videoId ? `http://127.0.0.1:8000/api/clips?video_id=${videoId}` : "http://127.0.0.1:8000/api/clips";
   return api.get(url);
 };
 export const getClip = (id: number) => api.get(`/api/clips/${id}`);
