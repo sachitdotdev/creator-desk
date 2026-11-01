@@ -21,7 +21,7 @@ export const processVideo = (
   id: number,
   body: { video_id: number; template_id?: number; num_clips?: number; vibe?: string },
 ) => {
-  const url = `http://127.0.0.1:8000/api/videos/${id}/process`;
+  const url = `${BASE_URL}/api/videos/${id}/process`;
   console.log("FETCHING URL:", url);
   return api.post(url, body);
 };
