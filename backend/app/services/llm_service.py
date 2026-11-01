@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import logging
+import traceback
 from typing import List, Optional, Dict, Any
 
 import httpx
@@ -204,7 +205,9 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
 
             return clips
         except Exception as exc:
-            print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {e}", flush=True)
+            print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {exc}", flush=True)
+            print(f"Raw response: {raw}", flush=True)
+            print(traceback.format_exc(), flush=True)
             logger.warning(f"LLM request failed ({exc}). Falling back to equal-length clips.")
             return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
 
