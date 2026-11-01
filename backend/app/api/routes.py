@@ -99,9 +99,14 @@ async def _run_pipeline(video_id: str):
 
             # Render each clip
             print(f"DEBUG: Rendering clip {idx+1}/{len(clips)}", flush=True)
-            RenderService(db).render_clip(clip, video)
+            try:
+                RenderService(db).render_clip(clip, video)
+            except Exception as e:
+                print(f"DEBUG: Render failed for clip {idx+1}: {e}", flush=True)
+                raise
 
         # Update video status to done
+        print(f"DEBUG: All clips rendered, updating video status", flush=True)
         video.status = "done"
         db.add(video)
         db.commit()

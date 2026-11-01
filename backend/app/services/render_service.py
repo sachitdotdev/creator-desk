@@ -83,6 +83,7 @@ class RenderService:
         """
         render_root = Path(base_path) if base_path else RENDERS_DIR
         ensure_writable_dir(render_root)
+        print(f"DEBUG render_clip: clip_id={clip.id}", flush=True)
         
         output_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.mp4"
         
@@ -92,18 +93,22 @@ class RenderService:
         
         # 1. Build ASS subtitles from transcript if available
         ass_path = self._build_ass(clip, video, config, render_root)
+        print(f"DEBUG render_clip: ass_path={ass_path}", flush=True)
         
         # 2. Build the ffmpeg filter graph
         vf = self._build_filter_graph(video, config, ass_path)
+        print(f"DEBUG render_clip: vf={vf}", flush=True)
         
         # 3. Run ffmpeg (timeout-protected).
         # When an ASS file is burned in, set cwd to the ASS file's folder so
         # the bare `ass=<name>` filter reference resolves correctly.
         cmd = self._build_ffmpeg_cmd(video.path, clip.start_time, clip.end_time, vf, str(output_path), config, ass_path)
         ffmpeg_cwd = str(Path(ass_path).parent) if ass_path else None
+        print(f"DEBUG render_clip: running ffmpeg, cwd={ffmpeg_cwd}", flush=True)
         try:
-            subprocess.run([str(x) for x in cmd], check=True, timeout=120, cwd=ffmpeg_cwd)
+                subprocess.run([str(x) for x in cmd], check=True, timeout=120, cwd=ffmpeg_cwd)
         except subprocess.CalledProcessError as exc:
+            print(f"DEBUG render_clip: ffmpeg failed: {exc}", flush=True)
             raise RuntimeError(f"FFmpeg render failed: {exc}") from exc
         
         # Generate a thumbnail (best-effort; failure does not fail the render)
@@ -123,6 +128,7 @@ class RenderService:
                 check=True,
             )
         except Exception:
+            print(f"DEBUG render_clip: thumbnail generation failed", flush=True)
             thumb_path = None
         
         clip.output_path = str(output_path)
@@ -130,6 +136,7 @@ class RenderService:
         clip.status = "rendered"
         clip.progress = 100.0
         self.db.commit()
+        print(f"DEBUG render_clip: done, output={output_path}", flush=True)
         
         # Release GPU/accelerator memory after each render so long batch
         # sessions do not leak NVENC/CUDA buffers.
@@ -359,13 +366,6 @@ class RenderService:
         hwaccel = FFMPEG_DEVICE  # cuda | cpu
 
         if ass_path:
-            safe_ass = str(ass_path).replace("\\", "/").replace(":", "\\:")
-            ass_filter = f",ass='{safe_ass}'"
-        else:
-            ass_filter = ""
-
-        # Ensure ASS path is properly escaped for Windows
-        if ass_path:
             ass_name = Path(ass_path).name
             ass_filter = f",ass='{ass_name}'"
         else:
@@ -383,8 +383,8 @@ class RenderService:
             "-i", input_path,
             "-t", str(duration),
             "-vf", vf_string,
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
+            "-c:v", "libx264",
+            "-preset", "medium",
             "-rc", "vbr",
             "-cq", str(OUTPUT_CRF),
             "-b:v", "5M",
@@ -400,4 +400,5 @@ class RenderService:
         ]
 
         print(f"DEBUG FFMPEG CMD: {cmd}", flush=True)
+        print(f"DEBUG FFMPEG CMD length: {len(cmd)}", flush=True)
         return cmd
