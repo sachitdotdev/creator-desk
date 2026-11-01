@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, Play } from 'lucide-react';
+import { listVideos, listTemplates, uploadVideo, processVideo } from '@/lib/api';
 
 export function VideoRow({ video, onSelect, isSelected, navigate }: { video: any; onSelect?: () => void; isSelected?: boolean; navigate?: (path: string) => void }) {
   return (
@@ -23,9 +24,8 @@ export default function UploadStudio() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/videos').then(r => r.json()).then(setVideos).catch(() => {});
-    fetch('http://127.0.0.1:8000/api/templates').then(r => r.json()).then(setTemplates).catch(() => {});
-    fetch('http://127.0.0.1:8000/api/discover/trending').then(r => r.json()).then(setTrending).catch(() => {});
+    listVideos().then(setVideos).catch(() => {});
+    listTemplates().then(setTemplates).catch(() => {});
   }, []);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -33,15 +33,9 @@ export default function UploadStudio() {
   const handleUpload = async () => {
     if (!selectedFile) return;
 
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/videos/upload', {
-        method: 'POST',
-        body: formData
-      });
-      if (response.ok) {
+      const response = await uploadVideo(selectedFile);
+      if (response.status === 200) {
         window.location.reload();
       }
     } catch (error) {
@@ -54,11 +48,10 @@ export default function UploadStudio() {
     const videoId = selectedVideoId;
     setIsProcessing(true);
     try {
-      await fetch(`http://127.0.0.1:8000/api/videos/${videoId}/process`, { method: 'POST' });
+      await processVideo(videoId, { num_clips: 5 });
 
       const interval = setInterval(async () => {
-        const res = await fetch('http://127.0.0.1:8000/api/videos');
-        const data = await res.json();
+        const data = await listVideos();
         setVideos(data);
         const currentVideo = data.find((v: any) => v.id === videoId);
         if (currentVideo && (currentVideo.status === 'done' || currentVideo.status === 'error')) {
