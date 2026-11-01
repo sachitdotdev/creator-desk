@@ -156,7 +156,6 @@ class LLMService:
             f"[{s.start:.1f}s - {s.end:.1f}s] {s.text}"
             for s in transcript_segments
         )
-        transcript_text = transcript_text[:15000]
         system = SYSTEM_PROMPT_BY_VIBE.get(vibe, SYSTEM_PROMPT)
         if custom_prompt:
             system += f"\n\nCustom instructions: {custom_prompt}\n"
@@ -171,40 +170,70 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
 
         try:
             client = await self._client_instance()
-            logger.info(f"Sending {len(transcript_text)} characters to Ollama. Waiting for response...")
-            resp = await client.post(
-                "/api/generate",
-                json={
-                    "model": self.model,
-                    "system": system,
-                    "prompt": user_prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.4,
-                        "num_predict": 1024,
-                        "num_ctx": 32768,
-                    },
-                },
-                timeout=120.0,
-            )
-            resp.raise_for_status()
+            # Chunk transcript into ~50 segments per chunk
+            chunk_size = max(1, len(transcript_segments) // 50)
+            all_clips: List[Dict[str, Any]] = []
 
-            data = resp.json()
-            raw = data.get("response", "{}")
-            print(f"RAW OLLAMA RESPONSE: {raw}", flush=True)
-            clips = self._parse_response(raw)
+            for chunk_idx in range(0, len(transcript_segments), chunk_size):
+                chunk = transcript_segments[chunk_idx:chunk_idx + chunk_size]
+                chunk_text = "\n".join(
+                    f"[{s.start:.1f}s - {s.end:.1f}s] {s.text}"
+                    for s in chunk
+                )
+                chunk_prompt = f"""
+TRANSCRIPT (chunk {chunk_idx // chunk_size + 1}):
+{chunk_text}
 
-            # Filter out clips shorter than 15 seconds
-            clips = [clip for clip in clips if (clip["end"] - clip["start"]) >= 15]
+TARGET: Select 1-2 best short clips from this chunk.
+Return ONLY valid JSON matching the schema. No markdown, no explanation.
+"""
+                try:
+                    resp = await client.post(
+                        "/api/generate",
+                        json={
+                            "model": self.model,
+                            "system": system,
+                            "prompt": chunk_prompt,
+                            "stream": False,
+                            "format": "json",
+                            "options": {
+                                "temperature": 0.4,
+                                "num_predict": 1024,
+                                "num_ctx": 32768,
+                            },
+                        },
+                        timeout=120.0,
+                    )
+                    resp.raise_for_status()
 
-            for clip in clips:
-                duration = clip["end"] - clip["start"]
-                if duration < 60:
-                    logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 30.0s.")
-                    clip["end"] = clip["start"] + 30.0
+                    data = resp.json()
+                    raw = data.get("response", "{}")
+                    print(f"RAW OLLAMA RESPONSE (chunk {chunk_idx // chunk_size + 1}): {raw}", flush=True)
+                    clips = self._parse_response(raw)
 
-            return clips
+                    # Filter out clips shorter than 15 seconds
+                    clips = [clip for clip in clips if (clip["end"] - clip["start"]) >= 15]
+
+                    for clip in clips:
+                        duration = clip["end"] - clip["start"]
+                        if duration < 60:
+                            logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 30.0s.")
+                            clip["end"] = clip["start"] + 30.0
+
+                    all_clips.extend(clips)
+                except Exception as exc:
+                    print(f"Chunk {chunk_idx // chunk_size + 1} failed: {exc}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    logger.warning(f"Chunk {chunk_idx // chunk_size + 1} failed ({exc}). Continuing...")
+                    continue
+
+            if not all_clips:
+                logger.warning("All chunks failed. Falling back to dummy clips.")
+                return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
+
+            # Sort by composite_score descending and return top num_clips
+            all_clips.sort(key=lambda c: c.get("composite_score", 0), reverse=True)
+            return all_clips[:num_clips]
         except Exception as exc:
             print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {exc}", flush=True)
             print(f"Raw response: {locals().get("raw", "Raw not defined")}", flush=True)
