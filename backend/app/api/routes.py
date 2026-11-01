@@ -78,7 +78,7 @@ async def _run_pipeline(video_id: str):
 
         print("DEBUG: Starting rendering", flush=True)
         # Loop through clips, create Clip records, and render each one
-        for clip_data in clips:
+        for idx, clip_data in enumerate(clips):
             clip = models.Clip(
                 video_id=video.id,
                 start_time=clip_data["start"],
@@ -98,6 +98,7 @@ async def _run_pipeline(video_id: str):
             db.refresh(clip)
 
             # Render each clip
+            print(f"DEBUG: Rendering clip {idx+1}/{len(clips)}", flush=True)
             RenderService(db).render_clip(clip, video)
 
         # Update video status to done
