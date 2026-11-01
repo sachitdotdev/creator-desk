@@ -24,7 +24,10 @@ export default function UploadStudio() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
-    listVideos().then(data => setVideos(Array.isArray(data) ? data : [])).catch(() => {});
+    listVideos().then(data => {
+      console.log('DEBUG: Videos from backend:', data);
+      setVideos(Array.isArray(data) ? data : []);
+    }).catch(() => {});
     listTemplates().then(data => setTemplates(Array.isArray(data) ? data : [])).catch(() => {});
     getTrending().then(data => setTrending(Array.isArray(data) ? data : [])).catch(() => {});
   }, []);

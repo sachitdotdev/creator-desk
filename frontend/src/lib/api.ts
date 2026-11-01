@@ -8,7 +8,11 @@ export const api: AxiosInstance = axios.create({
 });
 
 // Videos
-export const listVideos = () => api.get("/api/videos").catch(() => []);
+export const listVideos = async () => {
+  const res = await api.get('/api/videos');
+  const data = await res.json();
+  return data;
+};
 export const uploadVideo = (file: File) => {
   const fd = new FormData();
   fd.append("file", file);
