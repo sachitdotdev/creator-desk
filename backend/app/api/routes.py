@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -129,8 +130,11 @@ def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(mod
 def get_templates(db: Session = Depends(get_db)): return db.query(models.Template).all()
 
 @router.get("/clips")
-def get_all_clips(db: Session = Depends(get_db)):
-    return db.query(models.Clip).all()
+def get_all_clips(video_id: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(models.Clip)
+    if video_id:
+        query = query.filter(models.Clip.video_id == video_id)
+    return query.all()
 
 @router.get("/status")
 def get_status(): return {"status": "ok"}
