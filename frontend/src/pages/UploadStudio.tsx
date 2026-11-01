@@ -2,9 +2,9 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, Play } from 'lucide-react';
 
-export function VideoRow({ video, onSelect }: { video: any; onSelect?: () => void }) {
+export function VideoRow({ video, onSelect, isSelected }: { video: any; onSelect?: () => void; isSelected?: boolean }) {
   return (
-    <div onClick={() => onSelect?.()} className={`flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2 ${selectedVideoId === video.id ? 'border-purple-500' : ''}`}>
+    <div onClick={() => onSelect?.()} className={`flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2 ${isSelected ? 'border-purple-500' : ''}`}>
       <div>
         <h3 className="font-semibold text-white">{video.original_name || video.filename}</h3>
         <p className="text-xs text-slate-400">{video.status === 'done' ? 'Done' : video.status}</p>
@@ -120,7 +120,7 @@ export default function UploadStudio() {
         <div className="mt-6">
           <h2 className="text-xl font-bold text-white mb-4">Recent Videos</h2>
           <div className="space-y-2">
-            {videos.map(v => <VideoRow key={v.id} video={v} onSelect={() => setSelectedVideoId(v.id)} />)}
+            {videos.map(v => <VideoRow key={v.id} video={v} isSelected={selectedVideoId === video.id} onSelect={() => setSelectedVideoId(v.id)} />)}
             {videos.length === 0 && <p className="text-slate-500 text-sm">No videos yet.</p>}
           </div>
         </div>
