@@ -6,7 +6,7 @@ export function VideoRow({ video }: { video: any }) {
     <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2">
       <div>
         <h3 className="font-semibold text-white">{video.original_name || video.filename}</h3>
-        <p className="text-xs text-slate-400">{video.status}</p>
+        <p className="text-xs text-slate-400">{video.status === 'done' ? 'Done' : video.status}</p>
       </div>
       <button className="text-xs text-purple-400 font-semibold">View Clips</button>
     </div>
