@@ -2,14 +2,14 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, Play } from 'lucide-react';
 
-export function VideoRow({ video, onSelect, isSelected }: { video: any; onSelect?: () => void; isSelected?: boolean }) {
+export function VideoRow({ video, onSelect, isSelected, navigate }: { video: any; onSelect?: () => void; isSelected?: boolean; navigate?: (path: string) => void }) {
   return (
-    <div onClick={() => onSelect?.()} className={`flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2 ${isSelected ? 'border-purple-500' : ''}`}>
+    <div onClick={() => onSelect?.()} className={`flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2 cursor-pointer select-none ${isSelected ? 'border-2 border-purple-500 bg-purple-900/20' : 'border border-transparent'}`}>
       <div>
         <h3 className="font-semibold text-white">{video.original_name || video.filename}</h3>
         <p className="text-xs text-slate-400">{video.status === 'done' ? 'Done' : video.status}</p>
       </div>
-      <button onClick={(e) => { e.stopPropagation(); navigate(`/clips?videoId=${video.id}`); }} className="text-xs text-purple-400 font-semibold">View Clips</button>
+      <button onClick={(e) => { e.stopPropagation(); navigate?.(`/clips?videoId=${video.id}`); }} className="text-xs text-purple-400 font-semibold">View Clips</button>
     </div>
   );
 }
@@ -111,8 +111,8 @@ export default function UploadStudio() {
           </div>
           <button
             onClick={startPipeline}
-            disabled={isProcessing}
-            className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-semibold flex items-center gap-2 disabled:opacity-50"
+            disabled={isProcessing || !selectedVideoId}
+            className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-semibold flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Play className="h-4 w-4" /> {isProcessing ? 'Processing...' : 'Start Pipeline'}
           </button>
@@ -120,7 +120,7 @@ export default function UploadStudio() {
         <div className="mt-6">
           <h2 className="text-xl font-bold text-white mb-4">Recent Videos</h2>
           <div className="space-y-2">
-            {videos.map(v => <VideoRow key={v.id} video={v} isSelected={selectedVideoId === v.id} onSelect={() => setSelectedVideoId(v.id)} />)}
+            {videos.map(v => <VideoRow key={v.id} video={v} isSelected={selectedVideoId === v.id} onSelect={() => setSelectedVideoId(v.id)} navigate={navigate} />)}
             {videos.length === 0 && <p className="text-slate-500 text-sm">No videos yet.</p>}
           </div>
         </div>
