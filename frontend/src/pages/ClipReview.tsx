@@ -84,10 +84,10 @@ export default function ClipReview() {
     return allClips.filter((clip) => clip.video_id === videoId);
   }, [clips, videoId]);
 
-  useQuery({
+  const { data: templates = [] } = useQuery({
     queryKey: ["templates-list"],
     queryFn: () => listTemplates().then((r) => { setTemplates(r.data); return r.data; }),
-    enabled: templates.length === 0,
+    enabled: templates?.length === 0,
   });
 
   const updateMut = useMutation({
@@ -144,7 +144,7 @@ export default function ClipReview() {
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground mb-3" />
           <h3 className="text-sm font-medium">Loading clips…</h3>
         </Card>
-      ) : filteredClips.length === 0 ? (
+      ) : filteredClips?.length === 0 ? (
         <Card className="flex flex-col items-center justify-center py-20 text-center border-dashed">
           <Film className="mx-auto h-12 w-12 text-muted-foreground mb-3" />
           <h3 className="text-sm font-medium">
