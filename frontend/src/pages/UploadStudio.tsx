@@ -1,22 +1,25 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Zap, Play } from 'lucide-react';
 
-export function VideoRow({ video }: { video: any }) {
+export function VideoRow({ video, onSelect }: { video: any; onSelect?: () => void }) {
   return (
-    <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2">
+    <div onClick={() => onSelect?.()} className={`flex items-center justify-between p-4 bg-slate-800/50 rounded-lg mb-2 ${selectedVideoId === video.id ? 'border-purple-500' : ''}`}>
       <div>
         <h3 className="font-semibold text-white">{video.original_name || video.filename}</h3>
         <p className="text-xs text-slate-400">{video.status === 'done' ? 'Done' : video.status}</p>
       </div>
-      <button className="text-xs text-purple-400 font-semibold">View Clips</button>
+      <button onClick={(e) => { e.stopPropagation(); navigate(`/clips?videoId=${video.id}`); }} className="text-xs text-purple-400 font-semibold">View Clips</button>
     </div>
   );
 }
 
 export default function UploadStudio() {
+  const navigate = useNavigate();
   const [videos, setVideos] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [trending, setTrending] = useState<any[]>([]);
+  const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
@@ -47,8 +50,8 @@ export default function UploadStudio() {
   };
 
   const startPipeline = async () => {
-    if (videos.length === 0) return;
-    const videoId = videos[0].id;
+    if (!selectedVideoId) { alert('Please select a video first'); return; }
+    const videoId = selectedVideoId;
     setIsProcessing(true);
     try {
       await fetch(`http://127.0.0.1:8000/api/videos/${videoId}/process`, { method: 'POST' });
@@ -117,7 +120,7 @@ export default function UploadStudio() {
         <div className="mt-6">
           <h2 className="text-xl font-bold text-white mb-4">Recent Videos</h2>
           <div className="space-y-2">
-            {videos.map(v => <VideoRow key={v.id} video={v} />)}
+            {videos.map(v => <VideoRow key={v.id} video={v} onSelect={() => setSelectedVideoId(v.id)} />)}
             {videos.length === 0 && <p className="text-slate-500 text-sm">No videos yet.</p>}
           </div>
         </div>
