@@ -14,7 +14,7 @@ from app.core.config import OLLAMA_BASE_URL, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_A
 
 
 # Strong system prompt tuned for short-form clip selection + copy generation.
-SYSTEM_PROMPT = """CRITICAL: You MUST generate clips that are between 15 and 45 seconds long. Do not generate clips shorter than 15 seconds.
+SYSTEM_PROMPT = """CRITICAL: You MUST generate clips that are between 60.0 and 90.0 seconds long. Do not generate clips shorter than 60.0 seconds.
 You are an expert short-form video editor and social-media strategist.
 Your job is to watch a video transcript (with timestamps) and pick the BEST 4-5 short clips
 suitable for TikTok / Instagram Reels / YouTube Shorts (vertical 9:16).
@@ -211,14 +211,17 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
                     print(f"RAW OLLAMA RESPONSE (chunk {chunk_idx // chunk_size + 1}): {raw}", flush=True)
                     clips = self._parse_response(raw)
 
-                    # Filter out clips shorter than 15 seconds
+                    if not clips:
+                        print(f"LLM returned 0 valid clips. Raw: {raw}", flush=True)
+
+                    # Filter out clips shorter than 60.0 seconds
                     clips = [clip for clip in clips if (clip["end"] - clip["start"]) >= 15]
 
                     for clip in clips:
                         duration = clip["end"] - clip["start"]
                         if duration < 60:
                             logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 30.0s.")
-                            clip["end"] = clip["start"] + 30.0
+                            clip["end"] = clip["start"] + 60.0
 
                     all_clips.extend(clips)
                 except Exception as exc:
@@ -238,6 +241,7 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
             print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {exc}", flush=True)
             print(f"Raw response: {locals().get("raw", "Raw not defined")}", flush=True)
             print(traceback.format_exc(), flush=True)
+            print("!!! TRIGGERING FALLBACK CLIPS !!!", flush=True)
             logger.warning(f"LLM request failed ({exc}). Falling back to equal-length clips.")
             return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
 
@@ -300,8 +304,8 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
             e = min(s + step, max_end)
             
             # Ensure minimum duration of 30.0 seconds
-            if e - s < 30.0:
-                e = s + 30.0
+            if e - s < 60.0:
+                e = s + 60.0
             
             # If even after expansion we're still too close to max_end, 
             # we might need to adjust the step or just accept slightly larger chunks
@@ -374,8 +378,8 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
             if not has_large_gap:
                 # Ensure minimum duration of 30.0 seconds
                 if clip["end"] - clip["start"] < 30.0:
-                    # Extend the end to reach 30s if possible
-                    clip["end"] = clip["start"] + 30.0
+                    # Extend the end to reach 60s if possible
+                    clip["end"] = clip["start"] + 60.0
                 
                 processed_clips.append(clip)
         
