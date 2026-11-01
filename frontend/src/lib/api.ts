@@ -12,7 +12,7 @@ export const listVideos = () => api.get("/api/videos").catch(() => []);
 export const uploadVideo = (file: File) => {
   const fd = new FormData();
   fd.append("file", file);
-  return api.post("/api/videos", fd, {
+  return api.post("/api/videos/upload", fd, {
     headers: { "Content-Type": "multipart/form-data" },
   });
 };
@@ -69,7 +69,7 @@ export const disconnectSocialAccount = (id: number) => api.delete(`/api/accounts
 export const exportPackage = (clipId: number) => api.post("/api/accounts/export", { clip_id: clipId });
 
 // Trending
-export const getTrending = () => api.get("/api/trending");
+export const getTrending = () => api.get("/api/discover/trending");
 
 // Status
 export const status = () => {
