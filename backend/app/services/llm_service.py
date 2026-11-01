@@ -220,7 +220,7 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
                     for clip in clips:
                         duration = clip["end"] - clip["start"]
                         if duration < 60:
-                            logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 30.0s.")
+                            logger.warning(f"Clip duration {duration:.1f}s is too short. Expanding to 60.0s.")
                             clip["end"] = clip["start"] + 60.0
 
                     all_clips.extend(clips)
