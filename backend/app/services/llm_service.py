@@ -204,6 +204,7 @@ Return ONLY valid JSON matching the schema. No markdown, no explanation.
 
             return clips
         except Exception as exc:
+            print(f"LLM CRASHED - FALLING BACK TO DUMMY CLIPS: {e}", flush=True)
             logger.warning(f"LLM request failed ({exc}). Falling back to equal-length clips.")
             return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
 
