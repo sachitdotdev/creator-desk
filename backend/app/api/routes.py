@@ -128,6 +128,10 @@ def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(mod
 @router.get("/templates")
 def get_templates(db: Session = Depends(get_db)): return db.query(models.Template).all()
 
+@router.get("/clips")
+def get_all_clips(db: Session = Depends(get_db)):
+    return db.query(models.Clip).all()
+
 @router.get("/status")
 def get_status(): return {"status": "ok"}
 
