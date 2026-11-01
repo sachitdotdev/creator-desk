@@ -27,9 +27,9 @@ export default function UploadStudio() {
     listVideos().then(data => {
       console.log('DEBUG: Videos from backend:', data);
       setVideos(Array.isArray(data) ? data : []);
-    }).catch(() => {});
-    listTemplates().then(data => setTemplates(Array.isArray(data) ? data : [])).catch(() => {});
-    getTrending().then(data => setTrending(Array.isArray(data) ? data : [])).catch(() => {});
+    }).catch(err => console.error("API ERROR:", err));
+    listTemplates().then(data => setTemplates(Array.isArray(data) ? data : [])).catch(err => console.error("API ERROR:", err));
+    getTrending().then(data => setTrending(Array.isArray(data) ? data : [])).catch(err => console.error("API ERROR:", err));
   }, []);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);

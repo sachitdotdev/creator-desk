@@ -10,8 +10,7 @@ export const api: AxiosInstance = axios.create({
 // Videos
 export const listVideos = async () => {
   const res = await api.get('/api/videos');
-  const data = await res.json();
-  return data;
+  return res.data;
 };
 export const uploadVideo = (file: File) => {
   const fd = new FormData();
@@ -45,7 +44,7 @@ export const getRender = (filename: string) => api.get(`/api/renders/${filename}
 export const getSource = (filename: string) => api.get(`/api/sources/${filename}`);
 
 // Templates
-export const listTemplates = () => api.get("/api/templates");
+export const listTemplates = () => api.get('/api/templates').then(res => res.data);
 export const getTemplate = (id: number) => api.get(`/api/templates/${id}`);
 export const createTemplate = (body: Record<string, unknown>) => api.post("/api/templates", body);
 export const updateTemplate = (id: number, body: Record<string, unknown>) =>
@@ -73,7 +72,7 @@ export const disconnectSocialAccount = (id: number) => api.delete(`/api/accounts
 export const exportPackage = (clipId: number) => api.post("/api/accounts/export", { clip_id: clipId });
 
 // Trending
-export const getTrending = () => api.get("/api/discover/trending");
+export const getTrending = () => api.get('/api/discover/trending').then(res => res.data);
 
 // Status
 export const status = () => {
