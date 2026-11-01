@@ -321,9 +321,7 @@ class RenderService:
         # Burn subtitles. Use a bare filename resolved via the ffmpeg working
         # directory (set to the ASS file's folder in render_clip) to avoid
         # fragile Windows drive-letter/backslash escaping inside the filtergraph.
-        if ass_path:
-            ass_name = Path(ass_path).name
-            parts.append(f"ass={ass_name}")
+        # ASS subtitles are added in _build_ffmpeg_cmd
 
         # Title overlay (drawtext)
         title_conf = config.get("title", {})
@@ -371,10 +369,20 @@ class RenderService:
         else:
             ass_filter = ""
         
-        # Dynamic zoompan filter with slow center zoom
-        zoompan_filter = "zoompan=z='min(zoom+0.0005,1.3)':d=20:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
-        
-        vf_string = vf
+        # Rebuild vf_string from scratch using a list
+        vf_parts = [
+            "scale=-2:1920:flags=bicubic",
+            "crop=1080:1920:(iw-1080)/2:0",
+        ]
+        # Add zoompan
+        vf_parts.append(
+            "zoompan=z='min(zoom+0.0005,1.3)':d=20:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
+        )
+        # Add ASS captions
+        if ass_path and os.path.exists(ass_path):
+            safe_ass_path = ass_path.replace("\\", "/").replace(":", "\\:")
+            vf_parts.append(f"ass='{safe_ass_path}'")
+        vf_string = ",".join(vf_parts)
 
         cmd = [
             FFMPEG_PATH, "-y",
