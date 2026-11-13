@@ -54,3 +54,12 @@ echo FROM qwen2.5-coder:14b > Modelfile
 echo PARAMETER num_ctx 32768 >> Modelfile
 echo PARAMETER num_predict 8192 >> Modelfile
 ollama create qwen-agent -f Modelfile
+
+## 📸 Screenshots
+
+<div align="center">
+  <img src="<img width="1518" height="828" alt="Screenshot 2026-11-12 201131" src="https://github.com/user-attachments/assets/53c0d8d2-0a0c-4573-b102-ddc5e6fb1faa" />
+" alt="CreatorDesk Dashboard" width="80%" />
+</div>
+
+<br/>
