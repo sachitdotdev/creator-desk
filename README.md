@@ -46,23 +46,24 @@ Ollama installed and running.
 2. Model Setup (Ollama)
 Create the agent model with a large context window:
 
+text
 echo FROM qwen2.5-coder:14b > Modelfile
 echo PARAMETER num_ctx 32768 >> Modelfile
 echo PARAMETER num_predict 8192 >> Modelfile
 ollama create qwen-agent -f Modelfile
-
 3. Backend Setup
+text
 cd backend
 python -m venv venv
-venv\Scripts\activate
+# Windows: venv\Scripts\activate
+# Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
-
 4. Frontend Setup
+text
 cd frontend
 npm install
 npm run dev
-
 Open your browser and navigate to http://localhost:5173 (or the port Vite provides). The app connects to the backend API at http://localhost:8001.
 
 📂 Project Structure
