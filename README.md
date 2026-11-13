@@ -46,39 +46,40 @@ Ollama installed and running.
 2. Model Setup (Ollama)
 Create the agent model with a large context window:
 
-bash
 echo FROM qwen2.5-coder:14b > Modelfile
 echo PARAMETER num_ctx 32768 >> Modelfile
 echo PARAMETER num_predict 8192 >> Modelfile
 ollama create qwen-agent -f Modelfile
+
 3. Backend Setup
-bash
 cd backend
 python -m venv venv
-# Windows: venv\Scripts\activate
-# Mac/Linux: source venv/bin/activate
+
+Windows: venv\Scripts\activate
+Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
+
 4. Frontend Setup
-bash
 cd frontend
 npm install
 npm run dev
+
 Open your browser and navigate to http://localhost:5173 (or the port Vite provides). The app connects to the backend API at http://localhost:8001.
 
 📂 Project Structure
-text
-📦 creator-desk
- ┣ 📂 backend
- ┃ ┣ 📂 app
- ┃ ┃ ┣ 📂 api        # FastAPI routes
- ┃ ┃ ┣ 📂 services   # Core logic (llm, render, whisper)
- ┃ ┃ ┗ 📜 main.py
- ┃ ┗ 📜 requirements.txt
- ┣ 📂 frontend
- ┃ ┣ 📂 src          # React components & API wrappers
- ┃ ┗ 📜 package.json
- ┣ 📂 .openhands     # Agent skills, setup scripts, hooks
- ┣ 📜 AGENTS.md      # AI agent configuration guide
- ┗ 📜 docker-compose.yml
+backend/: FastAPI application (Python, uvicorn)
+
+frontend/: React dashboard (npm, vite)
+
+backend/app/api/: API route handlers
+
+backend/app/services/: Core business logic (llm, render, whisper)
+
+frontend/src/: React components, API wrappers
+
+.openhands/: Agent skills, setup scripts, hooks
+
+AGENTS.md: AI agent configuration guide
+
 <div align="center"> <i>Built by <a href="https://github.com/sachitdotdev">Sachit Jaswal</a></i> </div>
