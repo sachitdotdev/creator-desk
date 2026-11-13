@@ -1,84 +1,110 @@
-<div align="center"> <h1>🎬 CreatorDesk</h1> <p><b>An AI-powered, autonomous short-form video editing pipeline.</b></p> <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" /> <img src="https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi" /> <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" /> <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" /> <img src="https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=ollama&logoColor=white" /> <img src="https://img.shields.io/badge/FFmpeg-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" /> </div>
-📖 Overview
+<div align="center">
+  <h1>🎬 CreatorDesk</h1>
+  <p><b>An AI-powered, autonomous short-form video editing pipeline.</b></p>
+
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi" />
+  <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" />
+  <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" />
+  <img src="https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=ollama&logoColor=white" />
+  <img src="https://img.shields.io/badge/FFmpeg-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" />
+</div>
+
+<br/>
+
+## 📖 Overview
+
 CreatorDesk takes raw long-form video, transcribes it, uses a local LLM to find the most viral 60+ second moments, and renders them into vertical (9:16) TikTok/Reels-ready clips with dynamic captions and zoom effects.
 
-"I built this to solve the bottleneck of manual short-form editing, leveraging local AI to run entirely offline and eliminate API costs."
+> *"I built this to solve the bottleneck of manual short-form editing, leveraging local AI to run entirely offline and eliminate API costs."*
 
-📸 Screenshots
-<div align="center"> <img src="https://github.com/user-attachments/assets/53c0d8d2-0a0c-4573-b102-ddc5e6fb1faa" alt="CreatorDesk Dashboard" width="80%" /> </div>
-✨ Key Features
-🧠 AI Clip Selection: Uses a local Map-Reduce chunking strategy to analyze entire videos without blowing up the context window.
+## 📸 Screenshots
 
-💰 Monetization Ready: Enforces a minimum 60-second duration for every clip to qualify for TikTok Creator Rewards.
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/53c0d8d2-0a0c-4573-b102-ddc5e6fb1faa" alt="CreatorDesk Dashboard" width="80%" />
+</div>
 
-🎥 Dynamic Rendering: Uses FFmpeg to crop to 9:16, apply a slow Ken Burns zoom, and burn in dynamic ASS karaoke captions.
+<br/>
 
-💻 Modern Dashboard: A React + Vite + Tailwind CSS UI with live status polling and clip filtering.
+## ✨ Key Features
 
-🤖 Autonomous Agents: Configured with OpenHands AGENTS.md, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
+- **🧠 AI Clip Selection:** Uses a local Map-Reduce chunking strategy to analyze entire videos without blowing up the context window.
+- **💰 Monetization Ready:** Enforces a minimum 60-second duration for every clip to qualify for TikTok Creator Rewards.
+- **🎥 Dynamic Rendering:** Uses FFmpeg to crop to 9:16, apply a slow Ken Burns zoom, and burn in dynamic ASS karaoke captions.
+- **💻 Modern Dashboard:** A React + Vite + Tailwind CSS UI with live status polling and clip filtering.
+- **🤖 Autonomous Agents:** Configured with OpenHands `AGENTS.md`, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
 
-🏗️ Architecture Overview
+## 🏗️ Architecture Overview
+
 CreatorDesk runs two parallel pipelines:
 
-Audio Pipeline: Raw audio is transcribed using faster-whisper. The transcript is chunked, and an AI agent analyzes each chunk to identify engaging moments.
+1. **Audio Pipeline:** Raw audio is transcribed using **faster-whisper**. The transcript is chunked, and an AI agent analyzes each chunk to identify engaging moments.
+2. **Video Pipeline:** The original video is processed simultaneously. The moments identified by the audio pipeline guide the clipping process.
+3. **Final Assembly:** Clips are rendered vertically (9:16) with dynamic effects, captions, and zoom, ready for platform distribution.
 
-Video Pipeline: The original video is processed simultaneously. The moments identified by the audio pipeline guide the clipping process.
+## 🛠️ Tech Stack
 
-Final Assembly: Clips are rendered vertically (9:16) with dynamic effects, captions, and zoom, ready for platform distribution.
+| Component | Technology |
+| :--- | :--- |
+| **Backend** | Python 3.11+, FastAPI, Uvicorn, SQLAlchemy, SQLite |
+| **Frontend** | React, TypeScript, Vite, Tailwind CSS |
+| **LLM Inference** | Ollama (Qwen 2.5 Coder) or vLLM |
+| **Audio Processing** | faster-whisper (VAD & Transcription) |
+| **Video Rendering** | FFmpeg, OpenCV |
 
-🛠️ Tech Stack
-Component	Technology
-Backend	Python 3.11+, FastAPI, Uvicorn, SQLAlchemy, SQLite
-Frontend	React, TypeScript, Vite, Tailwind CSS
-LLM Inference	Ollama (Qwen 2.5 Coder) or vLLM
-Audio Processing	faster-whisper (VAD & Transcription)
-Video Rendering	FFmpeg, OpenCV
-🚀 Local Setup
-1. Prerequisites
-Python 3.11+
+## 🚀 Local Setup
 
-Node.js 18+
+### 1. Prerequisites
 
-FFmpeg installed and added to your system PATH.
+- Python 3.11+
+- Node.js 18+
+- [FFmpeg](https://ffmpeg.org/) installed and added to your system PATH.
+- [Ollama](https://ollama.com/) installed and running.
 
-Ollama installed and running.
+### 2. Model Setup (Ollama)
 
-2. Model Setup (Ollama)
 Create the agent model with a large context window:
 
-bash
+```bash
 echo FROM qwen2.5-coder:14b > Modelfile
 echo PARAMETER num_ctx 32768 >> Modelfile
 echo PARAMETER num_predict 8192 >> Modelfile
 ollama create qwen-agent -f Modelfile
-3. Backend Setup
-bash
+```
+
+### 3. Backend Setup
+
+```bash
 cd backend
 python -m venv venv
 # Windows: venv\Scripts\activate
 # Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
-4. Frontend Setup
-bash
+```
+
+### 4. Frontend Setup
+
+```bash
 cd frontend
 npm install
 npm run dev
-Open your browser and navigate to http://localhost:5173 (or the port Vite provides). The app connects to the backend API at http://localhost:8001.
+```
 
-📂 Project Structure
-backend/: FastAPI application (Python, uvicorn)
+Open your browser and navigate to `http://localhost:5173` (or the port Vite provides). The app connects to the backend API at `http://localhost:8001`.
 
-frontend/: React dashboard (npm, vite)
+## 📂 Project Structure
 
-backend/app/api/: API route handlers
+- **`backend/`**: FastAPI application (Python, uvicorn)
+- **`frontend/`**: React dashboard (npm, vite)
+- **`backend/app/api/`**: API route handlers
+- **`backend/app/services/`**: Core business logic (llm, render, whisper)
+- **`frontend/src/`**: React components, API wrappers
+- **`.openhands/`**: Agent skills, setup scripts, hooks
+- **`AGENTS.md`**: AI agent configuration guide
 
-backend/app/services/: Core business logic (llm, render, whisper)
+---
 
-frontend/src/: React components, API wrappers
-
-.openhands/: Agent skills, setup scripts, hooks
-
-AGENTS.md: AI agent configuration guide
-
-<div align="center"> <i>Built by <a href="https://github.com/sachitdotdev">Sachit Jaswal</a></i> </div>
+<div align="center">
+  <i>Built by <a href="https://github.com/sachitdotdev">Sachit Jaswal</a></i>
+</div>
