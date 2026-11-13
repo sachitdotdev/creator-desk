@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/venv/
+__pycache__/
+*.pyc
+
+# Video Files (Source and Rendered)
+backend/data/
+backend/backend/data/
+*.mp4
+*.webm
+*.mkv
+*.avi
+
+# Environment and DB
+.env
+*.db
+*.sqlite
+
+# Ignore root data folder (renders, sources, transcripts)
+data/
+
+# Video data and renders
+data/
+
+# Debugging junk
+_edit.py
+fix_llm.py
+render_service_new.py
+test_render.py
+write_test_script.py
+
+# The temporary factory environment for quantizing models
+backend/venv_factory/
+
+# Massive PyTorch wheels and model weights
+*.whl
+*.gguf
+*.safetensors
+*.pt
+
+# The isolated vLLM microservice folder (too large for git)
+services/vllm/
+
+# Local cache and temp files
+.cache/
+*.log
+
+GOAL.txt
+
+# Agent logs and build outputs
+.openhands/
+frontend/dist/
+dist/

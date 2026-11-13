@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 22% 8%;
+    --foreground: 210 40% 98%;
+    --card: 222 22% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 22% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 263 83% 62%;
+    --primary-foreground: 222 22% 8%;
+    --secondary: 222 22% 16%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 222 22% 16%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 263 83% 62%;
+    --accent-foreground: 222 22% 8%;
+    --destructive: 0 72% 57%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 22% 18%;
+    --input: 222 22% 18%;
+    --ring: 263 83% 62%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 222 22% 7%;
+    --foreground: 210 40% 98%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: "Inter", system-ui, sans-serif;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .glass {
+    background: rgba(15, 15, 18, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+}
