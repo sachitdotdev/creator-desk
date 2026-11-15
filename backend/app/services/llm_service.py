@@ -48,6 +48,13 @@ CRITICAL INSTRUCTIONS:
 2. YOU MUST GENERATE AT LEAST 3 TEXT OPERATIONS PER CLIP. Spread them out across the 60-second duration.
 3. The "start" and "end" timestamps for your text operations MUST be absolute timestamps from the original transcript.
 
+    Operations can be one of:
+    - {"type": "text", "text": "...", "start": <seconds>, "end": <seconds>}
+    - {"type": "sfx", "name": "boom" | "whoosh" | "riser" | "click", "start": <seconds>}
+
+    Use "sfx" sparingly: only at hook reveals (first 1-2 seconds),
+    surprising punchlines, or section transitions.
+    Never more than 3 SFX per clip. Never add "end" to sfx ops.
 EXAMPLES OF BAD HOOKS (DO NOT DO THIS):
 - "CHEESE CARS"
 - "BIODEGRADABLE"
@@ -107,7 +114,10 @@ class LLMService:
             print(f"RAW VLLM RESPONSE: {raw}", flush=True)
             
             obj = json.loads(raw)
-            clips = obj.get("clips", [])
+            if isinstance(obj, list):
+                clips = obj
+            else:
+                clips = obj.get("clips", [])
             
             normalized = []
             for c in clips:
@@ -121,7 +131,9 @@ class LLMService:
                 if "operations" not in c and "text" in c:
                     ops = [{"type": "text", "start": raw_start, "end": raw_end, "text": c.get("text")}]
                 else:
-                    ops = c.get("operations", [])
+                    # Preserve both text and sfx operations returned by the LLM.
+                    raw_ops = c.get("operations", []) or []
+                    ops = [op for op in raw_ops if op.get("type") in ("text", "sfx")]
                     
                 normalized.append({
                     "start": raw_start,
