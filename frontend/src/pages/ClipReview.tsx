@@ -53,7 +53,7 @@ import { toast } from "sonner";
 function renderUrl(path: string | null | undefined): string {
   if (!path) return "";
   const filename = path.split(/[/\\]/).pop() || "";
-  return `http://127.0.0.1:8001/renders/${filename}`;
+  return `http://127.0.0.1:8080/renders/${filename}`;
 }
 
 export default function ClipReview() {

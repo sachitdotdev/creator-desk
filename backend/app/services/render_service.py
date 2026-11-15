@@ -18,6 +18,7 @@ from app.services.whisper_service import (
     WhisperService,
 )
 from app.services.edit_compiler import compile_plan
+from app.services.audio_compiler import build_audio_filter
 from app.services.face_tracker import generate_sendcmd_file
 from app.core.config import (
     RENDERS_DIR,
@@ -144,11 +145,24 @@ class RenderService:
         )
         print(f"DEBUG render_clip: vf={vf}", flush=True)
         
+        template_config = template.config if template else {}
+        music_path = template_config.get("background_music") if template_config else None
+        music_volume = (template_config.get("background_music_volume", 0.25) if template_config else 0.25)
+        duck_enabled = (template_config.get("background_music_duck", True) if template_config else True)
+        audio_filter, extra_audio_inputs = build_audio_filter(
+            sfx_events=sfx_files,
+            music_path=music_path,
+            music_volume=music_volume,
+            duck=duck_enabled,
+            output_duration=61.0,
+        )
+        full_filter = f"{vf};{audio_filter}"
+
         # 3. Run ffmpeg (timeout-protected).
         # When an ASS file is burned in, set cwd to the ASS file's folder so
         # the bare `ass=<name>` filter reference resolves correctly.
         print("DEBUG render_clip: Starting _build_ffmpeg_cmd", flush=True)
-        cmd = self._build_ffmpeg_cmd(video.path, clip.start_time, clip.end_time, vf, str(output_path), ass_path, sfx_files)
+        cmd = self._build_ffmpeg_cmd(video.path, clip.start_time, clip.end_time, full_filter, str(output_path), ass_path, sfx_files, extra_audio_inputs=extra_audio_inputs)
         ffmpeg_cwd = str(Path(ass_path).parent) if ass_path else None
         print(f"DEBUG render_clip: running ffmpeg, cwd={ffmpeg_cwd}", flush=True)
         print(f"DEBUG render_clip: ffmpeg command (space-separated): {' '.join(str(x) for x in cmd)}", flush=True)
@@ -359,10 +373,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         input_path: str,
         start: float,
         end: float,
-        vf: str,
+        filter_complex: str,
         output_path: str,
         ass_path: Optional[str] = None,
         sfx_files: Optional[List[str]] = None,
+        extra_audio_inputs: Optional[List[str]] = None,
     ) -> List[str]:
         """Build the ffmpeg command list for rendering a vertical clip."""
         cmd = [
@@ -370,19 +385,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             "-hide_banner", "-loglevel", "warning",
             "-ss", str(start),
             "-i", input_path,
+            *(["-i", path] for path in (extra_audio_inputs or [])),
             "-t", str(end - start),
-            "-filter_complex", vf,
+            "-filter_complex", filter_complex,
             "-map", "[out_final]",
-            "-map", "0:a",
+            "-map", "[aout]",
             "-c:v", "h264_nvenc", "-preset", "p4",
             "-b:v", "5M",
             "-maxrate", "10M",
             "-bufsize", "10M",
             "-c:a", "aac",
-            "-b:a", "128k",
+            "-b:a", "192k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
             str(output_path),
         ]
         return cmd

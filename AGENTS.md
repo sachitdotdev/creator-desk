@@ -22,7 +22,7 @@ It takes raw uploaded videos, transcribes them via Faster-Whisper, uses a local 
 
 
 # Setup & Run Commands
-- **Backend:** `cd backend && uvicorn app.main:app --reload` (Runs on `http://127.0.0.1:8000`)
+- **Backend:** `cd backend && uvicorn app.main:app --reload` (Runs on `http://127.0.0.1:8080`)
 - **Frontend:** `cd frontend && npm run dev` (Runs on `http://localhost:5173`)
 
 
@@ -66,3 +66,11 @@ Before declaring a task complete:
 1. Backend changes MUST be verified with `python -m py_compile <file_path>`.
 2. Frontend changes MUST be verified by checking for TypeScript errors (`npx tsc --noEmit`) if possible.
 3. If modifying API routes, verify the endpoint using a curl command or FastAPI test client.
+
+
+# ⚙️ Sandbox / Editing Notes (session-learned)
+
+- The repo is mounted from the host Windows drive (`/creator-desk` <- `C:\`, 9p fs).
+- **`file_editor` tool fails to write** on this mount (`Errno 13: Operation not permitted`) and creates a temp file. Use terminal-based Python `.replace()` edits instead (per AGENTS.md rule #1).
+- Avoid `grep -r "<port>"` across `backend/` or the whole repo — it chokes on the huge `haarcascade_frontalface_default.xml`, venv, and vLLM service trees. Scope greps to `backend/app` and `frontend/src`, excluding `venv`, `__pycache__`, `.git`, `node_modules`, and `assets`.
+- Infra ports left untouched: vLLM :8002, Ollama :11434/11435, Vite UI :5173 (browser auto-open in start.bat).

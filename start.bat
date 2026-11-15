@@ -97,9 +97,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: --- 3. Start FastAPI backend on port 8001 in its own window ----------------
+:: --- 3. Start FastAPI backend on port 8080 in its own window ----------------
 echo [3/4] Starting FastAPI backend ...
-start "CreatorDesk Backend" cmd /k "cd /d ""%BACKEND%"" & call venv\Scripts\activate.bat & uvicorn app.main:app --reload --port 8001"
+start "CreatorDesk Backend" cmd /k "cd /d ""%BACKEND%"" & call venv\Scripts\activate.bat & uvicorn app.main:app --reload --port 8080"
 
 :: --- 4. Start frontend (npm install + npm run dev) in another window --------
 echo [4/4] Starting frontend ...
@@ -114,8 +114,8 @@ echo.
 echo ==========================================
 echo   CreatorDesk AI is starting...
 echo ==========================================
-echo   Backend API : http://localhost:8001
-echo   Backend docs: http://localhost:8001/docs
+echo   Backend API : http://localhost:8080
+echo   Backend docs: http://localhost:8080/docs
 echo   Frontend UI : http://localhost:5173
 echo ==========================================
 echo.

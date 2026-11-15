@@ -56,7 +56,10 @@ def compile_plan(
             rel_end = max(rel_start + 0.5, op.get("end", 0.0) - clip_start_time)
             
             if op_type == "text":
-                text = op.get("text", "").replace("'", "").replace(":", "").replace("[", "").replace("]", "").replace(",", "")
+                raw_text = op.get("text", "").strip()
+                words = raw_text.split()[:5]
+                text = " ".join(words)
+                text = text.replace("'", "").replace(":", "").replace("[", "").replace("]", "").replace(",", "")
                 wrapped_text = "\\n".join(textwrap.wrap(text, width=20))
                 out_label = f"[v{i}]" if i < len(operations) - 1 else "[vout]"
                 

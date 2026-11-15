@@ -2,19 +2,21 @@ version: '3.8'
 
 services:
   openhands:
-    image: docker.openhands.dev/openhands/openhands:0.60
+    image: ghcr.io/openhands/agent-canvas:latest
     container_name: openhands-app
     ports:
-      - "3000:3000"
+      - "127.0.0.1:8001:8000"
     volumes:
-      - //var/run/docker.sock:/var/run/docker.sock
       - openhands-data:/home/openhands/.openhands
-      # THIS is the magic line that mounts your Creator Desk folder!
       - ./:/workspace
+      - "/mnt/c/GITHUB CONTRIBUTION DONT TOUCH/awesome-ai-apps:/awesome-ai-apps"
+      - "/mnt/c/Sachit/Creator Desk:/creator-desk"
     environment:
       - SANDBOX_RUNTIME_CONTAINER_IMAGE=docker.openhands.dev/openhands/runtime:0.60-nikolaik
       - LOG_ALL_EVENTS=true
       - SANDBOX_USE_HOST_NETWORK=true
+      - AGENT_CANVAS_API_KEY=my-super-secret-key
+      - LOCAL_BACKEND_API_KEY=my-super-secret-key
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
