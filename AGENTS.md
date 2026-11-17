@@ -24,6 +24,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/main.py`                    — FastAPI app entry; mounts `/api`, `/renders`, `/sources`
 - `backend/app/api/routes.py`              — HTTP routes (videos, clips, templates, accounts, `/api/music`)
 - `backend/app/core/config.py`             — settings + ffmpeg binary resolution
+- `backend/app/core/gpu_lock.py`           — process-wide single-tenant GPU lock (sync + async)
 - `backend/app/core/paths.py`              — single source of truth for filesystem paths
 - `backend/app/core/processing_utils.py`   — robust media processing utilities (`run_subprocess`)
 - `backend/app/database.py`                — DB session, schema bootstrap
@@ -154,6 +155,14 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ## 7. Public repo
 Never commit `.env`, API keys, personal absolute paths, or copyrighted audio.
 BGM files are git-ignored; document license/source in a sidecar JSON.
+
+## 8. GPU rules
+- Every VRAM-touching stage holds `gpu_lock(stage)` from `core/gpu_lock.py` for
+  the minimum span of GPU work, then calls `flush_vram(stage)` at the end.
+  The lock is process-wide and re-entrant; `GPULockTimeout` fails loudly.
+- Ollama calls use `keep_alive: 0` so the model unloads after each request.
+- Never run blocking render work on the event loop: offload with
+  `asyncio.to_thread` and instantiate a new `SessionLocal()` inside the worker.
 
 # Testing & Verification
 

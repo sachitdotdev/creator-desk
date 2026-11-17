@@ -170,7 +170,9 @@ def free_comfyui() -> None:
     try:
         import httpx
 
-        response = httpx.post(f"{COMFYUI_URL}/free", timeout=COMFYUI_FREE_TIMEOUT)
+        response = httpx.post(
+            f"{COMFYUI_URL.rstrip('/')}/free", timeout=COMFYUI_FREE_TIMEOUT
+        )
         log.debug("[COMFYUI] /free -> %s at %s", response.status_code, COMFYUI_URL)
     except Exception as exc:  # noqa: BLE001 - ComfyUI is optional and best-effort
         log.debug("[COMFYUI] /free skipped (%s): %s", COMFYUI_URL, exc)

@@ -1,0 +1,269 @@
+"""Phase 4.0 GPU guardrails: lock, VRAM flush and off-loop render.
+
+These tests deliberately avoid torch/CUDA and pytest-asyncio so they run in the
+lightweight CI job (which installs no ML wheels).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import threading
+import time
+import types
+
+import pytest
+
+from app.core import processing_utils
+from app.core.gpu_lock import GPULockTimeout, async_gpu_lock, gpu_lock
+
+
+def test_gpu_lock_serializes_concurrent_threads():
+    active = 0
+    peak = 0
+    counter_lock = threading.Lock()
+    barrier = threading.Barrier(4)
+
+    def worker():
+        nonlocal active, peak
+        barrier.wait()
+        with gpu_lock("test:concurrent"):
+            with counter_lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with counter_lock:
+                active -= 1
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert peak == 1
+
+
+def test_gpu_lock_is_reentrant_in_one_thread():
+    done = threading.Event()
+
+    def worker():
+        with gpu_lock("test:outer"), gpu_lock("test:inner"):
+            done.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+    assert done.is_set()
+
+
+def test_gpu_lock_timeout_raises_then_releases():
+    held = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with gpu_lock("test:holder"):
+            held.set()
+            assert release.wait(timeout=5)
+
+    thread = threading.Thread(target=holder, daemon=True)
+    thread.start()
+    assert held.wait(timeout=5)
+    try:
+        with pytest.raises(GPULockTimeout, match="test:waiter"), gpu_lock(
+            "test:waiter", timeout=0.05
+        ):
+            pass  # pragma: no cover - must never be reached
+    finally:
+        release.set()
+        thread.join(timeout=5)
+
+    acquired = threading.Event()
+
+    def after():
+        with gpu_lock("test:after", timeout=1):
+            acquired.set()
+
+    waiter = threading.Thread(target=after, daemon=True)
+    waiter.start()
+    waiter.join(timeout=5)
+    assert acquired.is_set()
+
+
+def test_async_gpu_lock_does_not_block_the_event_loop():
+    async def scenario():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder():
+            async with async_gpu_lock("test:async"):
+                entered.set()
+                await release.wait()
+
+        holder_task = asyncio.create_task(holder())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        # A separate task keeps making progress while the GPU lock is held in
+        # its worker thread - proof the event loop itself was not blocked.
+        async def heartbeat():
+            for _ in range(5):
+                await asyncio.sleep(0.01)
+            return "responsive"
+
+        result = await asyncio.wait_for(heartbeat(), timeout=2)
+        assert result == "responsive"
+
+        # The async lock and the sync lock are the same underlying RLock.
+        sync_acquired = []
+
+        def try_sync():
+            try:
+                with gpu_lock("test:sync-while-async", timeout=0.05):
+                    sync_acquired.append(True)
+            except GPULockTimeout:
+                sync_acquired.append(False)
+
+        await asyncio.to_thread(try_sync)
+        assert sync_acquired == [False]
+
+        release.set()
+        await asyncio.wait_for(holder_task, timeout=5)
+
+    asyncio.run(scenario())
+
+
+def test_flush_vram_survives_missing_torch_and_failing_comfyui(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+    def boom():
+        raise RuntimeError("ComfyUI is down")
+
+    monkeypatch.setattr(processing_utils, "free_comfyui", boom)
+    # Must never raise, even with no torch and a broken ComfyUI hook.
+    processing_utils.flush_vram("test:no-torch")
+
+
+def test_flush_vram_calls_cuda_cleanup_when_available(monkeypatch):
+    calls: list[str] = []
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: calls.append("empty_cache"),
+            ipc_collect=lambda: calls.append("ipc_collect"),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(processing_utils, "free_comfyui", lambda: None)
+
+    processing_utils.flush_vram("test:cuda")
+
+    assert calls == ["empty_cache", "ipc_collect"]
+
+
+def test_free_comfyui_posts_free_and_never_raises(monkeypatch):
+    import httpx
+
+    calls: list[tuple[str, float]] = []
+
+    def fake_post(url, timeout):
+        calls.append((url, timeout))
+        return types.SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(processing_utils, "COMFYUI_URL", "http://comfy:8188/")
+    monkeypatch.setattr(processing_utils, "COMFYUI_FREE_TIMEOUT", 0.25)
+
+    processing_utils.free_comfyui()
+    assert calls == [("http://comfy:8188/free", 0.25)]
+
+    monkeypatch.setattr(processing_utils, "COMFYUI_URL", "")
+
+    processing_utils.free_comfyui()
+    assert len(calls) == 1  # unset URL is a silent no-op
+
+    def unreachable(url, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", unreachable)
+
+    processing_utils.free_comfyui()  # unreachable must not raise
+
+
+def test_llm_request_sends_keep_alive_zero_and_keeps_json_format():
+    from app.services.llm_service import LLMService
+
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            content = json.dumps({"clips": []})
+            message = types.SimpleNamespace(content=content)
+            return types.SimpleNamespace(
+                choices=[types.SimpleNamespace(message=message)]
+            )
+
+    service = LLMService()
+    service.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=FakeCompletions())
+    )
+
+    result = asyncio.run(
+        service.generate_clips([{"start": 0.0, "end": 1.0, "text": "hello"}])
+    )
+
+    assert result == []
+    assert calls[0]["extra_body"] == {"keep_alive": 0}
+    assert calls[0]["response_format"]["type"] == "json_schema"
+
+
+def test_render_worker_uses_fresh_session_and_closes_it(monkeypatch):
+    from app.api import routes
+
+    closed: list[bool] = []
+    used_sessions: list[object] = []
+    rows = iter(
+        [
+            types.SimpleNamespace(id=11),
+            types.SimpleNamespace(id=22),
+            types.SimpleNamespace(id=33),
+        ]
+    )
+
+    class FakeQuery:
+        def __init__(self, row):
+            self.row = row
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return next(rows)
+
+    class FakeSession:
+        def query(self, model):
+            return FakeQuery(None)
+
+        def close(self):
+            closed.append(True)
+
+    class FakeRenderService:
+        def __init__(self, db):
+            used_sessions.append(db)
+
+        def render_clip(self, clip, video, template):
+            return "/renders/out.mp4"
+
+    def new_session():
+        return FakeSession()
+
+    monkeypatch.setattr(routes, "SessionLocal", new_session)
+    monkeypatch.setattr(routes, "RenderService", FakeRenderService)
+
+    output = routes._render_clip_in_thread(11, 22, 33)
+
+    assert output == "/renders/out.mp4"
+    assert len(used_sessions) == 1
+    assert len(closed) == 1
+    assert isinstance(used_sessions[0], FakeSession)
