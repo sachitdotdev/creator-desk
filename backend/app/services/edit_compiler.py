@@ -16,22 +16,35 @@ def resolve_sfx_path(op: dict) -> str | None:
 
     The operation schema is extended, never replaced: ``file`` and ``name`` are
     both accepted (``name`` is the bare effect name, ``file`` may carry an
-    extension or an explicit absolute path). Returns ``None`` when the effect
-    cannot be found - callers log a warning and skip the event.
+    extension). Only the final file name is ever honoured: absolute and UNC
+    values are reduced to their basename so a plan can never read a file from
+    outside the SFX folder. Returns ``None`` when the effect cannot be found -
+    callers log a warning and skip the event.
     """
     raw = str(op.get("file") or op.get("name") or "").strip()
     if not raw:
         return None
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        path = candidate
-    else:
-        # Stay inside the SFX folder: only the final file name is honoured.
-        name = candidate.name
-        if not name.lower().endswith(_SFX_EXTENSIONS):
-            name = f"{name}.mp3"
-        path = Path(SFX_DIR) / name
-    return str(path) if path.is_file() else None
+
+    # Confine every value to SFX_DIR, whatever form it arrived in.
+    name = Path(raw).name
+    if not name or name in {".", ".."}:
+        log.warning("[SFX] rejected empty/invalid file name: %r", raw)
+        return None
+    if not name.lower().endswith(_SFX_EXTENSIONS):
+        name = f"{name}.mp3"
+
+    sfx_dir = Path(SFX_DIR)
+    path = sfx_dir / name
+    try:
+        resolved_dir = sfx_dir.resolve()
+        resolved = path.resolve()
+    except OSError:
+        log.warning("[SFX] rejected unresolvable path: %r", raw)
+        return None
+    if resolved_dir != resolved and resolved_dir not in resolved.parents:
+        log.warning("[SFX] rejected path outside SFX_DIR: %r", raw)
+        return None
+    return str(path) if resolved.is_file() else None
 
 # Phase 3.3 - Short hooks: Meissa-generated caption/hook text is truncated to a
 # punchy 3-5 word hook before the edit plan is compiled into the FFmpeg graph.
