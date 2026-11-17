@@ -49,7 +49,7 @@ def test_measure_loudness_parses_print_format_json(monkeypatch):
     mock_run.assert_called_once()
     cmd = mock_run.call_args.args[0]
     af_index = cmd.index("-af")
-    assert "loudnorm=I=-14:TP=-2:LRA=11" in cmd[af_index + 1]
+    assert "loudnorm=I=-14:TP=-1.5:LRA=11" in cmd[af_index + 1]
     assert "print_format=json" in cmd[af_index + 1]
     assert stats["input_i"] == pytest.approx(-21.75)
     assert stats["input_tp"] == pytest.approx(-21.07)

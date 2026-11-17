@@ -27,6 +27,7 @@ from app.core.config import (
     LOUDNESS_TARGET_I,
     LOUDNESS_TARGET_LRA,
     LOUDNESS_TARGET_TP,
+    LOUDNESS_TP_HEADROOM,
 )
 from app.core.gpu_lock import gpu_lock
 from app.core.processing_utils import (
@@ -254,7 +255,7 @@ class RenderService:
                     str(output_path),
                     str(normalized_path),
                     target_i=LOUDNESS_TARGET_I,
-                    target_tp=LOUDNESS_TARGET_TP,
+                    target_tp=LOUDNESS_TARGET_TP - LOUDNESS_TP_HEADROOM,
                     target_lra=LOUDNESS_TARGET_LRA,
                 )
                 if loudness_stats is not None:

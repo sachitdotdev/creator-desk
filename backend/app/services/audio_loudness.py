@@ -22,9 +22,7 @@ from app.core.processing_utils import run_subprocess
 
 # EBU R128 / ITU-R BS.1770 loudness targets for short-form vertical clips.
 LOUDNESS_TARGET_I = -14.0
-# AAC encoding can overshoot true peak by ~0.4-0.5 dB, so leave headroom for
-# the final delivery ceiling of -1.5 dBTP.
-LOUDNESS_TARGET_TP = -2.0
+LOUDNESS_TARGET_TP = -1.5
 LOUDNESS_TARGET_LRA = 11.0
 
 

@@ -102,9 +102,11 @@ MUSIC_MAX_UPLOAD_BYTES = MUSIC_MAX_UPLOAD_MB * 1024 * 1024
 # Phase 3.5 - Loudness normalization (EBU R128 two-pass). Optional final audio step.
 LOUDNESS_NORMALIZE = os.getenv("LOUDNESS_NORMALIZE", "false").strip().lower() in ("1", "true", "yes", "on")
 LOUDNESS_TARGET_I = float(os.getenv("LOUDNESS_TARGET_I", "-14"))
-# -2.0 leaves ~0.5 dB headroom for AAC encoder true-peak overshoot so the
-# final file lands at or below the -1.5 dBTP delivery ceiling.
-LOUDNESS_TARGET_TP = float(os.getenv("LOUDNESS_TARGET_TP", "-2"))
+LOUDNESS_TARGET_TP = float(os.getenv("LOUDNESS_TARGET_TP", "-1.5"))
+# The two-pass post-render normalization re-encodes audio as AAC, which can
+# overshoot true peak by ~0.5 dB. Leave headroom there only; the inline
+# loudnorm (single encode) keeps the -1.5 dBTP target above.
+LOUDNESS_TP_HEADROOM = float(os.getenv("LOUDNESS_TP_HEADROOM", "0.5"))
 LOUDNESS_TARGET_LRA = float(os.getenv("LOUDNESS_TARGET_LRA", "11"))
 
 # Batch (drop-folder) processing
