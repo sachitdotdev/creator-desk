@@ -2,7 +2,8 @@
 
 Creator Desk is an autonomous, AI-powered short-form video editing pipeline.
 It takes raw uploaded videos, transcribes them via Faster-Whisper, uses a local
-Ollama LLM to identify the most viral/engaging segments, and renders those
+local vLLM LLM (OpenAI-compatible, http://127.0.0.1:8002, model `meissa-7b-awq`)
+to identify the most viral/engaging segments, and renders those
 segments into vertical (9:16) TikTok/Reels style clips with dynamic captions
 using FFmpeg.
 
@@ -12,7 +13,7 @@ using FFmpeg.
   SQLAlchemy (SQLite), Pydantic.
 - **Frontend:** React, TypeScript, Vite, Tailwind CSS, React Router,
   TanStack Query.
-- **AI/ML:** Faster-Whisper (transcription), Ollama (local LLM).
+- **AI/ML:** Faster-Whisper (transcription), vLLM 0.27.1 (OpenAI-compatible LLM on 127.0.0.1:8002, model `meissa-7b-awq`). Ollama is no longer used by the pipeline; its config keys are vestigial.
 - **Video/Audio:** FFmpeg (via `subprocess`).
 
 ## Project Map — read this before exploring
@@ -147,8 +148,8 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - **ROUTING:** Endpoints must match the frontend's fetch calls exactly (watch for 404s).
 - **IMPORTS:** Import new models/sessions at the top of the file.
 
-## 4. Ollama & JSON Parsing
-- **FORMAT:** ALWAYS pass `"format": "json"` to the Ollama API payload.
+## 4. vLLM & JSON Parsing
+- **FORMAT:** ALWAYS request structured JSON via `response_format={"type": "json_schema", ...}` on the OpenAI-compatible `/v1/chat/completions` call; never send Ollama-only fields (`format`, `keep_alive`).
 - **PARSING:** Strip markdown backticks before `json.loads()`.
 - **FAIL LOUDLY:** On LLM failure print the RAW output and traceback; never silently
   substitute dummy data.
@@ -179,7 +180,7 @@ BGM files are git-ignored; document license/source in a sidecar JSON.
 - Every VRAM-touching stage holds `gpu_lock(stage)` from `core/gpu_lock.py` for
   the minimum span of GPU work, then calls `flush_vram(stage)` at the end.
   The lock is process-wide and re-entrant; `GPULockTimeout` fails loudly.
-- Ollama calls use `keep_alive: 0` so the model unloads after each request.
+- vLLM has no per-request unload: VRAM is released by the server lifetime, not per-request. Do not send Ollama's `keep_alive`.
 - Never run blocking render work on the event loop: offload with
   `asyncio.to_thread` and instantiate a new `SessionLocal()` inside the worker.
 

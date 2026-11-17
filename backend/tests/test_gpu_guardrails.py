@@ -190,7 +190,7 @@ def test_free_comfyui_posts_free_and_never_raises(monkeypatch):
     processing_utils.free_comfyui()  # unreachable must not raise
 
 
-def test_llm_request_sends_keep_alive_zero_and_keeps_json_format():
+def test_llm_request_keeps_json_format_without_keep_alive():
     from app.services.llm_service import LLMService
 
     calls: list[dict] = []
@@ -214,7 +214,7 @@ def test_llm_request_sends_keep_alive_zero_and_keeps_json_format():
     )
 
     assert result == []
-    assert calls[0]["extra_body"] == {"keep_alive": 0}
+    assert "extra_body" not in calls[0]
     assert calls[0]["response_format"]["type"] == "json_schema"
 
 
