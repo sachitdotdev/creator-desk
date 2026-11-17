@@ -124,7 +124,9 @@ async def _run_pipeline(video_id: str):
 
         print("DEBUG: Starting transcription", flush=True)
         # Call WhisperService to transcribe the video
-        whisper_result = WhisperService().transcribe(video_path)
+        # Whisper holds the GPU lock and does multi-minute blocking work; keep
+        # it off the event loop so health checks and status polling stay live.
+        whisper_result = await asyncio.to_thread(WhisperService().transcribe, video_path)
         video.status = "transcribed"
         transcript_dir = Path(str(TRANSCRIPTS_DIR))
         transcript_dir.mkdir(parents=True, exist_ok=True)

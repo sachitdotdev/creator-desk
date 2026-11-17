@@ -171,8 +171,13 @@ def free_comfyui() -> None:
         import httpx
 
         response = httpx.post(
-            f"{COMFYUI_URL.rstrip('/')}/free", timeout=COMFYUI_FREE_TIMEOUT
+            f"{COMFYUI_URL.rstrip('/')}/free",
+            timeout=COMFYUI_FREE_TIMEOUT,
+            json={"unload_models": True, "free_memory": True},
         )
+        # A non-2xx response is reported by the handler below. /free is strictly
+        # best-effort and must never fail the caller.
+        response.raise_for_status()
         log.debug("[COMFYUI] /free -> %s at %s", response.status_code, COMFYUI_URL)
     except Exception as exc:  # noqa: BLE001 - ComfyUI is optional and best-effort
         log.debug("[COMFYUI] /free skipped (%s): %s", COMFYUI_URL, exc)
