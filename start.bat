@@ -33,6 +33,7 @@ set "BACKEND=%ROOT%backend"
 set "FRONTEND=%ROOT%frontend"
 set "LOG_DIR=%ROOT%logs"
 set "RUN_DIR=%ROOT%.run"
+set "BOOTSTRAP_OK=%BACKEND%\venv\.bootstrap_ok"
 set "LLM_LOG=%LOG_DIR%\llm.log"
 set "BACKEND_LOG=%LOG_DIR%\backend.log"
 set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
@@ -45,20 +46,26 @@ if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 rem NOTE: PID files are cleared only for services we actually (re)start, so a
 rem second run that skips an already-healthy service keeps its tracking intact.
 
-rem --- Bootstrap the backend venv only when it is missing (fresh clone). -----
-if not exist "%BACKEND%\venv\Scripts\python.exe" (
-    echo [bootstrap] Creating backend venv ...
-    py -3.12 -m venv "%BACKEND%\venv" 2>NUL
-    if errorlevel 1 py -3.11 -m venv "%BACKEND%\venv"
-    if errorlevel 1 (
-        echo ERROR: could not create backend venv; install Python 3.12/3.11.
-        exit /b 1
+rem --- Bootstrap the backend venv using a success marker. python.exe alone
+rem --- does not prove pip install finished, so a missing marker re-runs the
+rem --- install (fresh clone or an interrupted first run). --------------------
+if not exist "%BOOTSTRAP_OK%" (
+    echo [bootstrap] Bootstrapping backend venv ...
+    if not exist "%BACKEND%\venv\Scripts\python.exe" (
+        py -3.12 -m venv "%BACKEND%\venv" 2>NUL
+        if errorlevel 1 py -3.11 -m venv "%BACKEND%\venv"
+        if errorlevel 1 (
+            echo ERROR: could not create backend venv; install Python 3.12/3.11.
+            exit /b 1
+        )
     )
     "%BACKEND%\venv\Scripts\python.exe" -m pip install -r "%BACKEND%\requirements.txt"
     if errorlevel 1 (
         echo ERROR: could not install backend requirements.
         exit /b 1
     )
+    rem Marker only after pip install succeeds; keep the fast path when present.
+    > "%BOOTSTRAP_OK%" echo ok
 )
 
 rem --- Build tiny per-service wrappers: redirect output to logs\ and feed NUL
@@ -71,8 +78,11 @@ rem --- to stdin so a trailing "pause" in any child script cannot block us.
 >> "%BACKEND_WRAPPER%" echo python -m uvicorn app.main:app --reload --port %BACKEND_PORT% ^> "%BACKEND_LOG%" 2^>^&1 ^< NUL
 > "%FRONTEND_WRAPPER%" echo @echo off
 >> "%FRONTEND_WRAPPER%" echo cd /d "%FRONTEND%"
->> "%FRONTEND_WRAPPER%" echo if not exist node_modules npm install
->> "%FRONTEND_WRAPPER%" echo npm run dev ^> "%FRONTEND_LOG%" 2^>^&1 ^< NUL
+>> "%FRONTEND_WRAPPER%" echo if not exist node_modules (
+>> "%FRONTEND_WRAPPER%" echo   call npm install
+>> "%FRONTEND_WRAPPER%" echo   if errorlevel 1 exit /b 1
+>> "%FRONTEND_WRAPPER%" echo )
+>> "%FRONTEND_WRAPPER%" echo npm run dev -- --port %FRONTEND_PORT% --strictPort ^> "%FRONTEND_LOG%" 2^>^&1 ^< NUL
 
 echo.
 echo ==========================================
@@ -148,7 +158,10 @@ exit /b 0
 :launch
 set "L_NAME=%~1"
 set "L_WRAPPER=%~2"
-powershell -NoProfile -Command "$p = Start-Process -FilePath '%L_WRAPPER%' -WindowStyle Minimized -PassThru; [IO.File]::WriteAllText('%RUN_DIR%\%L_NAME%.pid', [string]$p.Id)"
+rem Pass paths through the environment: interpolating them into the PowerShell
+rem source broke on paths containing a single quote. RUN_DIR is already an env
+rem var; L_NAME and L_WRAPPER are exported by the set commands above.
+powershell -NoProfile -Command "$p = Start-Process -FilePath $env:L_WRAPPER -WindowStyle Minimized -PassThru; [IO.File]::WriteAllText((Join-Path $env:RUN_DIR ($env:L_NAME + '.pid')), [string]$p.Id)"
 if errorlevel 1 (
     echo ERROR: could not launch %L_NAME%.
     exit /b 1
@@ -161,21 +174,33 @@ set "W_NAME=%~1"
 set "W_URL=%~2"
 set "W_TIMEOUT=%~3"
 set "W_LOG=%~4"
-set /a W_MAX=W_TIMEOUT/3+1
+rem Wall-clock budget in milliseconds with a 2s guard, so the final bounded
+rem curl (max 3s) cannot push total wait past W_TIMEOUT. A healthy check exits
+rem immediately, well before the budget is spent.
+set /a W_BUDGET_MS=%W_TIMEOUT%*1000-2000
+if !W_BUDGET_MS! LSS 1000 set /a W_BUDGET_MS=1000
+for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_START_MS=%%T"
 set /a W_TRY=0
 :wait_loop
+for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_NOW_MS=%%T"
+set /a W_REMAIN_MS=W_BUDGET_MS-(W_NOW_MS-W_START_MS)
+if !W_REMAIN_MS! LEQ 0 goto wait_fail
+set /a W_CURL_S=(!W_REMAIN_MS!+999)/1000
+if !W_CURL_S! GTR 3 set /a W_CURL_S=3
 set /a W_TRY+=1
-curl.exe -fsS -m 3 -o NUL "%W_URL%" >nul 2>&1
+curl.exe -fsS -m !W_CURL_S! -o NUL "%W_URL%" >nul 2>&1
 if not errorlevel 1 (
     echo   [OK] %W_NAME% healthy after ~!W_TRY! checks.
     exit /b 0
 )
-if !W_TRY! GEQ !W_MAX! (
-    echo.
-    echo ERROR: %W_NAME% did not become healthy within %W_TIMEOUT%s.
-    echo   Health URL: %W_URL%
-    echo   Log file  : %W_LOG%
-    exit /b 1
-)
-ping -n 4 127.0.0.1 >nul 2>&1
+rem Sleep only while a full delay still fits inside the remaining budget.
+for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_NOW_MS=%%T"
+set /a W_REMAIN_MS=W_BUDGET_MS-(W_NOW_MS-W_START_MS)
+if !W_REMAIN_MS! GEQ 2000 ping -n 2 127.0.0.1 >nul 2>&1
 goto wait_loop
+:wait_fail
+echo.
+echo ERROR: %W_NAME% did not become healthy within %W_TIMEOUT%s.
+echo   Health URL: %W_URL%
+echo   Log file  : %W_LOG%
+exit /b 1

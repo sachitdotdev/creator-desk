@@ -40,20 +40,24 @@ if not exist "%S_PID_FILE%" (
 )
 set "S_PID="
 set /p S_PID= < "%S_PID_FILE%"
-del "%S_PID_FILE%" >nul 2>&1
 if not defined S_PID (
+    del "%S_PID_FILE%" >nul 2>&1
     echo   [%S_NAME%] no PID recorded - skipped.
     exit /b 0
 )
 tasklist /FI "PID eq %S_PID%" 2>NUL | findstr /I /C:"%S_PID%" >nul 2>&1
 if errorlevel 1 (
+    rem Already gone: the stale PID file is safe to remove.
+    del "%S_PID_FILE%" >nul 2>&1
     echo   [%S_NAME%] PID %S_PID% is no longer running.
     exit /b 0
 )
 taskkill /PID %S_PID% /T /F >nul 2>&1
 if errorlevel 1 (
-    echo   [%S_NAME%] could not stop PID %S_PID% - check manually.
-) else (
-    echo   [%S_NAME%] stopped PID %S_PID% and its children on port %S_PORT%.
+    rem Keep the PID file so the operator can retry stopping this process.
+    echo   [%S_NAME%] could not stop PID %S_PID% - PID file kept for retry: %S_PID_FILE%
+    exit /b 1
 )
+del "%S_PID_FILE%" >nul 2>&1
+echo   [%S_NAME%] stopped PID %S_PID% and its children on port %S_PORT%.
 exit /b 0
