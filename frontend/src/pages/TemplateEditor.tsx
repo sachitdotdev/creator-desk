@@ -185,7 +185,7 @@ export default function TemplateEditor() {
                 {/* Controls */}
                 <div className="col-span-1 overflow-y-auto space-y-4">
                   {activeTab === "visual" ? (
-                    <VisualControls config={previewConfig} onChange={setPreviewConfig} />
+                    <VisualControls config={previewConfig} onChange={setPreviewConfig} editingId={editingId} />
                   ) : (
                     <JsonControls config={previewConfig} onChange={setPreviewConfig} />
                   )}
@@ -332,7 +332,7 @@ function JsonControls({ config, onChange }: { config: any; onChange: (v: any) =>
 }
 
 // ---------- Visual controls ----------
-function VisualControls({ config, onChange }: { config: any; onChange: (v: any) => void }) {
+function VisualControls({ config, onChange, editingId }: { config: any; onChange: (v: any | ((prev: any) => any)) => void; editingId: number | null }) {
   const cap = config.caption || {};
   const title = config.title || {};
   const wm = config.watermark || {};
@@ -348,18 +348,33 @@ function VisualControls({ config, onChange }: { config: any; onChange: (v: any) 
   const bgmTrack: string | null = config.bgm_track ?? null;
   const bgmVolume = typeof config.bgm_volume === "number" ? config.bgm_volume : 0.25;
 
+  // Discard an upload that finishes after this editor switched to another
+  // template (identity change) or unmounted entirely.
+  const aliveRef = useRef(true);
+  const editingIdRef = useRef(editingId);
+  editingIdRef.current = editingId;
+  useEffect(() => () => { aliveRef.current = false; }, []);
+
   const handleMusicUpload = async (file: File | undefined) => {
     if (!file) return;
+    const uploadEditingId = editingId; // template identity at upload start
     setUploadingMusic(true);
     try {
       const res = await uploadMusic(file);
       await refetchMusic();
-      onChange({ ...config, bgm_track: res.data.filename, bgm_volume: bgmVolume });
+      if (!aliveRef.current || editingIdRef.current !== uploadEditingId) return;
+      // Merge into the CURRENT config so a concurrent edit is not clobbered,
+      // and keep whatever bgm_volume is current.
+      onChange((current: any) => ({
+        ...current,
+        bgm_track: res.data.filename,
+        bgm_volume: current.bgm_volume ?? bgmVolume,
+      }));
       toast.success("Music uploaded");
     } catch {
       toast.error("Music upload failed");
     } finally {
-      setUploadingMusic(false);
+      if (aliveRef.current) setUploadingMusic(false);
       if (musicInputRef.current) musicInputRef.current.value = "";
     }
   };

@@ -13,21 +13,24 @@ Drop supported files directly in this folder:
 
 Audio files in this folder are git-ignored; this README is the only tracked file.
 
-## Optional metadata
+## Metadata (required for every track)
 
-Add a sidecar JSON next to a track named `<filename>.json`
-(for example `lofi.mp3.json`) to describe it in the Template Editor picker:
+Each track **must** have a sidecar JSON next to it, named `<filename>.json`
+(for example `lofi.mp3.json`), documenting its **license** and **source**. Do not
+add a track without one: the picker shows the license, and an undocumented track
+cannot be verified as usable.
 
 ```json
 {
+  "license": "CC0",
+  "source": "https://example.com/lofi",
   "title": "Late Night",
   "artist": "Your Name",
-  "license": "CC0",
   "mood": "chill",
   "bpm": 92
 }
 ```
 
-Every field is optional. Without a sidecar the filename stem is used as the
-title. Templates reference a track by filename (`bgm_track`), e.g.
-`"bgm_track": "lofi.mp3"`.
+`license` and `source` are required. `title`, `artist`, `mood` and `bpm` stay
+optional: without a sidecar the filename stem is used as the title. Templates
+reference a track by filename (`bgm_track`), e.g. `"bgm_track": "lofi.mp3"`.

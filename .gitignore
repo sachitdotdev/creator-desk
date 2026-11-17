@@ -54,8 +54,9 @@ GOAL.txt
 frontend/dist/
 dist/
 
-# BGM library: user-supplied tracks only, never bundled with the repo
-backend/assets/music/*.mp3
-backend/assets/music/*.wav
-backend/assets/music/*.m4a
-backend/assets/music/*.ogg
+# BGM library: user-supplied tracks only, never bundled with the repo.
+# Case-insensitive so "Track.MP3" cannot slip past; sidecar .json stays tracked.
+backend/assets/music/*.[mM][pP]3
+backend/assets/music/*.[wW][aA][vV]
+backend/assets/music/*.[mM]4[aA]
+backend/assets/music/*.[oO][gG][gG]
