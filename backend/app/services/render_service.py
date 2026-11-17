@@ -16,9 +16,17 @@ import torch
 from sqlalchemy.orm import Session
 
 from app.core.config import (
+    AUDIO_DUCK_ATTACK,
+    AUDIO_DUCK_RATIO,
+    AUDIO_DUCK_RELEASE,
+    AUDIO_DUCK_THRESHOLD,
+    AUDIO_MUSIC_VOLUME,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
     LOUDNESS_NORMALIZE,
+    LOUDNESS_TARGET_I,
+    LOUDNESS_TARGET_LRA,
+    LOUDNESS_TARGET_TP,
 )
 from app.core.processing_utils import (
     clear_gpu_memory,
@@ -147,7 +155,10 @@ class RenderService:
 
         template_config = template.config if template else {}
         music_path = template_config.get("background_music") if template_config else None
-        music_volume = (template_config.get("background_music_volume", 0.25) if template_config else 0.25)
+        music_volume = (
+            template_config.get("background_music_volume", AUDIO_MUSIC_VOLUME)
+            if template_config else AUDIO_MUSIC_VOLUME
+        )
         duck_enabled = (template_config.get("background_music_duck", True) if template_config else True)
         audio_filter, extra_audio_inputs = build_audio_filter(
             sfx_events=sfx_files,
@@ -155,6 +166,14 @@ class RenderService:
             music_volume=music_volume,
             duck=duck_enabled,
             output_duration=61.0,
+            duck_threshold=AUDIO_DUCK_THRESHOLD,
+            duck_ratio=AUDIO_DUCK_RATIO,
+            duck_attack=AUDIO_DUCK_ATTACK,
+            duck_release=AUDIO_DUCK_RELEASE,
+            # With the two-pass loudness pass enabled below, normalizing in the
+            # filtergraph as well would apply loudnorm twice. Keep the two-pass
+            # pass as the single final loudness stage in that case.
+            inline_loudnorm=not LOUDNESS_NORMALIZE,
         )
         full_filter = f"{vf};{audio_filter}"
 
@@ -183,6 +202,9 @@ class RenderService:
                 loudness_stats = apply_loudness_normalization(
                     str(output_path),
                     str(normalized_path),
+                    target_i=LOUDNESS_TARGET_I,
+                    target_tp=LOUDNESS_TARGET_TP,
+                    target_lra=LOUDNESS_TARGET_LRA,
                 )
                 if loudness_stats is not None:
                     os.replace(str(normalized_path), str(output_path))

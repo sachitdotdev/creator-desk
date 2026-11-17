@@ -76,6 +76,16 @@ OUTPUT_HEIGHT = int(os.getenv("OUTPUT_HEIGHT", "1920"))
 OUTPUT_FPS = int(os.getenv("OUTPUT_FPS", "30"))
 OUTPUT_CRF = int(os.getenv("OUTPUT_CRF", "24"))
 
+# Phase 3.1/3.2 - Audio mix: SFX layer gain + BGM ducking.
+# Ducking uses FFmpeg sidechaincompress keyed by the voice, so the music
+# ducks under speech. Ducking only runs when a BGM track is present.
+AUDIO_MUSIC_VOLUME = float(os.getenv("AUDIO_MUSIC_VOLUME", "0.25"))
+AUDIO_SFX_VOLUME = float(os.getenv("AUDIO_SFX_VOLUME", "0.9"))
+AUDIO_DUCK_THRESHOLD = float(os.getenv("AUDIO_DUCK_THRESHOLD", "0.05"))
+AUDIO_DUCK_RATIO = float(os.getenv("AUDIO_DUCK_RATIO", "8"))
+AUDIO_DUCK_ATTACK = int(os.getenv("AUDIO_DUCK_ATTACK", "20"))    # ms
+AUDIO_DUCK_RELEASE = int(os.getenv("AUDIO_DUCK_RELEASE", "400"))  # ms
+
 # Phase 3.5 - Loudness normalization (EBU R128 two-pass). Optional final audio step.
 LOUDNESS_NORMALIZE = os.getenv("LOUDNESS_NORMALIZE", "false").strip().lower() in ("1", "true", "yes", "on")
 LOUDNESS_TARGET_I = float(os.getenv("LOUDNESS_TARGET_I", "-14"))

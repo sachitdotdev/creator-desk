@@ -22,9 +22,14 @@ class TextOperation(BaseModel):
     text: str
 
 class SFXOperation(BaseModel):
+    # Fields are extended (not replaced) for Phase 3.1 SFX insertion: the LLM may
+    # name an effect ("boom"), point at a file explicitly, and control its level.
     type: str = Field(default="sfx")
     start: float
     name: str
+    file: str | None = None
+    time_sec: float | None = None
+    volume: float | None = None
 
 class Clip(BaseModel):
     clip_id: int
@@ -55,7 +60,7 @@ CRITICAL INSTRUCTIONS:
 
     Operations can be one of:
     - {"type": "text", "text": "...", "start": <seconds>, "end": <seconds>}
-    - {"type": "sfx", "name": "boom" | "whoosh" | "riser" | "click", "start": <seconds>}
+    - {"type": "sfx", "name": "boom" | "whoosh" | "pop", "start": <seconds>, "volume": <0.0-1.0, optional>}
 
     Use "sfx" sparingly: only at hook reveals (first 1-2 seconds),
     surprising punchlines, or section transitions.

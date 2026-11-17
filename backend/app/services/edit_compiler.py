@@ -1,8 +1,37 @@
-import os
+import logging
 import textwrap
+from pathlib import Path
+
+from app.core.config import AUDIO_SFX_VOLUME
+from app.core.paths import SFX_DIR
+
+log = logging.getLogger(__name__)
 
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
-SFX_DIR = "C:/Projects Openhands/Active/Creator Desk/backend/assets/sfx"
+_SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+
+
+def resolve_sfx_path(op: dict) -> str | None:
+    """Resolve an ``sfx`` operation to an existing file under ``paths.SFX_DIR``.
+
+    The operation schema is extended, never replaced: ``file`` and ``name`` are
+    both accepted (``name`` is the bare effect name, ``file`` may carry an
+    extension or an explicit absolute path). Returns ``None`` when the effect
+    cannot be found - callers log a warning and skip the event.
+    """
+    raw = str(op.get("file") or op.get("name") or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        path = candidate
+    else:
+        # Stay inside the SFX folder: only the final file name is honoured.
+        name = candidate.name
+        if not name.lower().endswith(_SFX_EXTENSIONS):
+            name = f"{name}.mp3"
+        path = Path(SFX_DIR) / name
+    return str(path) if path.is_file() else None
 
 # Phase 3.3 - Short hooks: Meissa-generated caption/hook text is truncated to a
 # punchy 3-5 word hook before the edit plan is compiled into the FFmpeg graph.
@@ -111,12 +140,34 @@ def compile_plan(
                 current_video = out_label
             
             elif op_type == "sfx":
-                sfx_name = op.get("name", "").lower()
-                sfx_path = f"{SFX_DIR}/{sfx_name}.mp3"
-                if not os.path.exists(sfx_path):
-                    sfx_path = f"{SFX_DIR}/boom.mp3"
-                if os.path.exists(sfx_path):
-                    sfx_files.append({"path": sfx_path, "start": rel_start})
+                sfx_path = resolve_sfx_path(op)
+                if not sfx_path:
+                    # Missing effect files are skipped, never fatal.
+                    log.warning(
+                        "[SFX] skipped: file not found (name=%r file=%r)",
+                        op.get("name"), op.get("file"),
+                    )
+                    continue
+                raw_time = op.get("time_sec")
+                if raw_time is None:
+                    raw_time = op.get("start", rel_start + clip_start_time)
+                try:
+                    event_time = float(str(raw_time).strip().rstrip("s"))
+                except (TypeError, ValueError):
+                    log.warning("[SFX] skipped: invalid time_sec/start=%r", raw_time)
+                    continue
+                sfx_files.append({
+                    "path": sfx_path,
+                    "name": op.get("name") or Path(sfx_path).stem,
+                    "start": max(0.0, event_time - clip_start_time),
+                    "volume": op.get("volume", AUDIO_SFX_VOLUME),
+                })
+                log.info(
+                    "[SFX] %s at %.2fs (clip-relative %.2fs, vol=%s)",
+                    Path(sfx_path).name, event_time,
+                    max(0.0, event_time - clip_start_time),
+                    op.get("volume", AUDIO_SFX_VOLUME),
+                )
     
     # 3. Burn ASS Captions
     if current_video == "[vstack]":
