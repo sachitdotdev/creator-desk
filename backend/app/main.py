@@ -12,6 +12,20 @@ app = FastAPI(title="CreatorDesk AI", version="1.0.0")
 
 logger = logging.getLogger("creatordesk")
 
+# Uvicorn configures only its own loggers, so the "app" logger's INFO lines
+# (GPU-LOCK acquire/release and [VRAM] flush hygiene) were silently dropped.
+# Give it an explicit stderr handler so those Phase 4.0 guardrails are visible
+# in logs/backend.log when launched by start.bat.
+_app_logger = logging.getLogger("app")
+_app_logger.setLevel(logging.INFO)
+if not _app_logger.handlers:
+    _app_handler = logging.StreamHandler()
+    _app_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    _app_logger.addHandler(_app_handler)
+_app_logger.propagate = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
