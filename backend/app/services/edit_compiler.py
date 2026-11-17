@@ -4,6 +4,37 @@ import textwrap
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
 SFX_DIR = "C:/Projects Openhands/Active/Creator Desk/backend/assets/sfx"
 
+# Phase 3.3 - Short hooks: Meissa-generated caption/hook text is truncated to a
+# punchy 3-5 word hook before the edit plan is compiled into the FFmpeg graph.
+HOOK_MAX_WORDS = 5
+_HOOK_FILLER_WORDS = {
+    "um", "uh", "erm", "uhh", "hmm", "like", "literally", "actually",
+    "really", "just", "simply", "sort", "kinda", "well", "so",
+}
+
+
+def truncate_hook_text(text: str, max_words: int = HOOK_MAX_WORDS) -> str:
+    """Post-process LLM hook/caption text into a short, punchy 3-5 word hook.
+
+    Drops filler words, keeps the most meaningful words and caps the result at
+    ``max_words`` (3-5 words for short hooks). Original casing and punctuation
+    are preserved. Returns "" for empty/whitespace-only input.
+    """
+    if not text or not str(text).strip():
+        return ""
+    cleaned = str(text).strip().strip("*").strip("`").strip()
+    if not cleaned:
+        return ""
+    kept_words = []
+    for word in cleaned.split():
+        key = word.strip(".,!?;:'()[]{}*-<>").lower()
+        if not key or key in _HOOK_FILLER_WORDS:
+            continue
+        kept_words.append(word)
+        if len(kept_words) >= max_words:
+            break
+    return " ".join(kept_words).strip()
+
 
 def compile_plan(
     operations: list,
@@ -11,7 +42,7 @@ def compile_plan(
     ass_filename: str,
     clip_start_time: float = 0.0,
     sendcmd_path: str = "",
-    template_config: dict = None,
+    template_config: dict | None = None,
 ) -> tuple:
     if template_config is None:
         template_config = {}
@@ -56,9 +87,7 @@ def compile_plan(
             rel_end = max(rel_start + 0.5, op.get("end", 0.0) - clip_start_time)
             
             if op_type == "text":
-                raw_text = op.get("text", "").strip()
-                words = raw_text.split()[:5]
-                text = " ".join(words)
+                text = truncate_hook_text(op.get("text", ""))
                 text = text.replace("'", "").replace(":", "").replace("[", "").replace("]", "").replace(",", "")
                 wrapped_text = "\\n".join(textwrap.wrap(text, width=20))
                 out_label = f"[v{i}]" if i < len(operations) - 1 else "[vout]"

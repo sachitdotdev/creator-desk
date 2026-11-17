@@ -20,10 +20,11 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app import models
 from app.core.config import (
     BATCH_DONE_DIR,
     BATCH_INPUT_DIR,
@@ -31,9 +32,11 @@ from app.core.config import (
     BATCH_VIBE,
     RENDERS_DIR,
 )
-from app.core.processing_utils import ensure_writable_dir, run_subprocess, validate_media_file
-from app import models
-from app.services import render_service, whisper_service, llm_service
+from app.core.processing_utils import (
+    ensure_writable_dir,
+    validate_media_file,
+)
+from app.services import llm_service, render_service, whisper_service
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv"}
 
@@ -46,9 +49,9 @@ class BatchService:
     def __init__(
         self,
         db: Session,
-        input_dir: Optional[Path] = None,
-        done_dir: Optional[Path] = None,
-        renders_dir: Optional[Path] = None,
+        input_dir: Path | None = None,
+        done_dir: Path | None = None,
+        renders_dir: Path | None = None,
     ):
         self.db = db
         self.input_dir = Path(input_dir) if input_dir else BATCH_INPUT_DIR
@@ -61,9 +64,9 @@ class BatchService:
         ensure_writable_dir(self.renders_dir)
 
     # ------------------------------------------------------------------ public
-    def scan_pending(self) -> List[Path]:
+    def scan_pending(self) -> list[Path]:
         """Return video files in the input folder that have not been processed."""
-        pending: List[Path] = []
+        pending: list[Path] = []
         if not self.input_dir.exists():
             return pending
         for path in sorted(self.input_dir.iterdir()):
@@ -85,10 +88,10 @@ class BatchService:
     def process_video(
         self,
         video_path: Path,
-        num_clips: Optional[int] = None,
-        vibe: Optional[str] = None,
-        template: Optional[models.Template] = None,
-    ) -> Dict[str, Any]:
+        num_clips: int | None = None,
+        vibe: str | None = None,
+        template: models.Template | None = None,
+    ) -> dict[str, Any]:
         """Run the full transcribe → clip-select → render pipeline for one video.
 
         Returns a dict with the video info and a list of rendered clip metadata.
@@ -128,6 +131,7 @@ class BatchService:
                         "-of", "json", str(video_path),
                     ],
                     capture_output=True, text=True, timeout=30,
+                    check=False,
                 )
                 data = json.loads(probe.stdout)
                 s = (data.get("streams") or [{}])[0]
@@ -137,7 +141,7 @@ class BatchService:
                     video.height = s.get("height")
                 if video.duration is None and s.get("duration"):
                     video.duration = float(s["duration"])
-            except Exception:
+            except Exception:  # noqa: BLE001,S110 - best-effort metadata probe
                 pass
         self.db.commit()
 
@@ -161,16 +165,16 @@ class BatchService:
 
         # --- 2. Clip selection (LLM with fallback) --------------------------
         segments = result.to_dict().get("segments", [])
-        clips_data: List[Dict[str, Any]] = []
+        clips_data: list[dict[str, Any]] = []
         try:
             clips_data = asyncio.run(
                 self.llm.generate_clips(segments, num_clips=num_clips, vibe=vibe)
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - LLM failure falls back to clip heuristics
             clips_data = self._fallback_clips(result, num_clips)
 
         # --- 3. Render each clip -------------------------------------------
-        rendered: List[Dict[str, Any]] = []
+        rendered: list[dict[str, Any]] = []
         for idx, item in enumerate(clips_data):
             start_time = max(0.0, float(item.get("start", 0)))
             end_time = max(start_time + 1.0, float(item.get("end", 0)))
@@ -211,7 +215,7 @@ class BatchService:
                 rendered.append(meta)
                 # Sidecar JSON next to the MP4 so the clip is ready to post.
                 self.write_sidecar_metadata(out, meta)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - render failure recorded on clip
                 clip.status = "error"
                 clip.error_message = f"render failed: {exc}"
                 self.db.commit()
@@ -239,18 +243,17 @@ class BatchService:
 
     def run_batch(
         self,
-        num_clips: Optional[int] = None,
-        vibe: Optional[str] = None,
-        template: Optional[models.Template] = None,
-    ) -> Dict[str, Any]:
+        num_clips: int | None = None,
+        vibe: str | None = None,
+        template: models.Template | None = None,
+    ) -> dict[str, Any]:
         """Process every pending video in the input folder."""
         pending = self.scan_pending()
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for path in pending:
             try:
                 results.append(self.process_video(path, num_clips, vibe, template))
-            except Exception as exc:
-                # One bad file must not abort the whole batch.
+            except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
                 results.append({
                     "video_file": path.name,
                     "video_path": str(path),
@@ -265,13 +268,13 @@ class BatchService:
 
     # ------------------------------------------------------------------ private
     @staticmethod
-    def _fallback_clips(result, num_clips: int) -> List[Dict[str, Any]]:
+    def _fallback_clips(result, num_clips: int) -> list[dict[str, Any]]:
         segs = result.to_dict().get("segments", [])
         if not segs:
             return []
         duration = result.duration or 60.0
         step = duration / num_clips
-        clips: List[Dict[str, Any]] = []
+        clips: list[dict[str, Any]] = []
         for i in range(num_clips):
             s = i * step
             e = min(s + step, duration)
@@ -293,11 +296,11 @@ class BatchService:
     def _clip_metadata(
         clip: models.Clip,
         video: models.Video,
-        template: Optional[models.Template],
-        clip_data: Dict[str, Any],
+        template: models.Template | None,
+        clip_data: dict[str, Any],
         output_path: str,
         transcript_path: Path,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         tmpl_name = template.name if template else "default"
         tmpl_id = template.id if template else None
         return {
@@ -331,11 +334,11 @@ class BatchService:
             if dest.exists():
                 dest = self.done_dir / f"{video_path.stem}_{uuid.uuid4().hex[:8]}{video_path.suffix}"
             shutil.move(str(video_path), str(dest))
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - moving is best-effort
             # Moving is best-effort; a failed move must not fail the batch.
             pass
 
-    def write_sidecar_metadata(self, output_path: str, metadata: Dict[str, Any]) -> Path:
+    def write_sidecar_metadata(self, output_path: str, metadata: dict[str, Any]) -> Path:
         """Write a sidecar .json next to a rendered MP4. Returns the json path."""
         out = Path(output_path)
         meta_path = out.with_suffix(".json")

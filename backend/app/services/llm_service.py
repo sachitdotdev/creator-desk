@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import traceback
-from typing import List, Optional, Dict, Any, Union
+from typing import Any
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -31,10 +31,10 @@ class Clip(BaseModel):
     start: float
     end: float
     layout: str = Field(default="center_crop")
-    operations: List[Union[TextOperation, SFXOperation]]
+    operations: list[TextOperation | SFXOperation]
 
 class ClipsResponse(BaseModel):
-    clips: List[Clip]
+    clips: list[Clip]
 # ---------------------------------------
 
 SYSTEM_PROMPT = """You are a ruthless TikTok editor. Identify the most viral, scroll-stopping moments in the transcript.
@@ -74,23 +74,23 @@ EXAMPLES OF GOOD VIRAL HOOKS (DO THIS):
 Return ONLY valid JSON matching the schema."""
 
 class LLMService:
-    def __init__(self, host: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, host: str | None = None, model: str | None = None):
         self.client = client
         self.model = model or "meissa-7b-awq"
 
     async def is_available(self) -> bool:
         return True
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         return [self.model]
 
     async def generate_clips(
         self,
-        transcript_segments: List[dict],
+        transcript_segments: list[dict],
         num_clips: int = 5,
         vibe: str = "Streamer Hype",
-        custom_prompt: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        custom_prompt: str | None = None,
+    ) -> list[dict[str, Any]]:
         
         transcript_text = "\n".join(
             f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text']}"
@@ -148,13 +148,13 @@ class LLMService:
                 })
             return normalized
             
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - LLM failure falls back to clip heuristics
             print(f"LLM CRASHED - FALLING BACK: {exc}", flush=True)
             traceback.print_exc()
             return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
 
     @staticmethod
-    def _generate_fallback_clips(transcript_segments: List[dict], num_clips: int, vibe: str) -> List[Dict[str, Any]]:
+    def _generate_fallback_clips(transcript_segments: list[dict], num_clips: int, vibe: str) -> list[dict[str, Any]]:
         if not transcript_segments: return []
         starts = [s['start'] for s in transcript_segments]
         ends = [s['end'] for s in transcript_segments]

@@ -1,6 +1,5 @@
-import os
 import logging
-
+import os
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +22,6 @@ def build_audio_filter(
     mix_labels = []
 
 
-    has_sfx = any(os.path.exists(e.get("path", "")) for e in sfx_events)
     has_music = bool(music_path) and os.path.exists(music_path)
     need_split = has_music and duck
 

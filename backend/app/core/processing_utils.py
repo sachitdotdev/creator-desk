@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 # Default timeout (seconds) for a single ffmpeg/ffprobe invocation. A long
 # batch should never let one hung encode block the whole server.
@@ -52,7 +51,7 @@ def validate_media_file(path, ffmpeg_path: str = "ffmpeg") -> dict:
     if not p.is_file():
         raise ValueError(f"Path is not a regular file: {path}")
     try:
-        p.stat().st_size  # raises PermissionError if unreadable
+        _ = p.stat().st_size  # raises PermissionError if unreadable
     except OSError as exc:
         raise ValueError(f"Cannot read media file: {path} ({exc})") from exc
 
@@ -70,6 +69,7 @@ def validate_media_file(path, ffmpeg_path: str = "ffmpeg") -> dict:
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"ffprobe timed out probing {path}") from exc
@@ -93,9 +93,9 @@ def validate_media_file(path, ffmpeg_path: str = "ffmpeg") -> dict:
 
 def run_subprocess(
     cmd,
-    timeout: Optional[int] = None,
+    timeout: int | None = None,
     check: bool = True,
-    cwd: Optional[str] = None,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess (ffmpeg/ffprobe) with a timeout and clear error reporting.
 
@@ -147,6 +147,6 @@ def clear_gpu_memory() -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-    except Exception:
+    except Exception:  # noqa: BLE001 - degrade gracefully when torch is unavailable
         # torch not installed, or no CUDA — nothing to do.
-        pass
+        print("DEBUG: clear_gpu_memory: skipping (torch unavailable or no CUDA)", flush=True)

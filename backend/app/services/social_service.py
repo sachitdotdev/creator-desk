@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 from app import models
 
@@ -29,7 +28,7 @@ class SocialService:
         if clip.status not in ("rendered", "approved"):
             raise ValueError(f"Clip is not ready to post (status: {clip.status})")
 
-        account: Optional[models.SocialAccount] = None
+        account: models.SocialAccount | None = None
         if schedule.account_id:
             account = (
                 db.query(models.SocialAccount)

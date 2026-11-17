@@ -1,38 +1,38 @@
 from __future__ import annotations
+
 from ..core.paths import RENDERS_DIR
+
 """Render service: FFmpeg libx264 9:16 vertical clips with burned ASS captions + template overlay."""
 
 import gc
 import json
 import os
 import subprocess
-import torch
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, ClassVar
 
+import torch
 from sqlalchemy.orm import Session
 
-from app.models import Clip, Template, Video
-from app.services.whisper_service import (
-    TranscriptSegment,
-    WhisperService,
-)
-from app.services.edit_compiler import compile_plan
-from app.services.audio_compiler import build_audio_filter
-from app.services.face_tracker import generate_sendcmd_file
 from app.core.config import (
-    RENDERS_DIR,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
-    OUTPUT_HEIGHT,
-    OUTPUT_FPS,
-    OUTPUT_CRF,
+    LOUDNESS_NORMALIZE,
 )
 from app.core.processing_utils import (
-    ensure_writable_dir,
     clear_gpu_memory,
+    ensure_writable_dir,
+    run_subprocess,
 )
+from app.models import Clip, Template, Video
+from app.services.audio_compiler import build_audio_filter
+from app.services.audio_loudness import (
+    apply_loudness_normalization,
+    is_ffmpeg_available,
+)
+from app.services.edit_compiler import compile_plan
+from app.services.face_tracker import generate_sendcmd_file
 
 
 def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
@@ -43,12 +43,12 @@ def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
         g = hex_color[3:5]
         b = hex_color[5:7]
         return f"&H00{b}{g}{r}&"
-    except Exception:
+    except Exception:  # noqa: BLE001 - color fallback is best-effort
         return default
 
 
 class RenderService:
-    VIBE_PROFILES = {
+    VIBE_PROFILES: ClassVar[dict] = {
         "Streamer Hype": {
             "layout": "Split Stack",
             "zoom_intensity": "fast",
@@ -89,14 +89,14 @@ class RenderService:
         """Convert seconds to H:MM:SS.cs format."""
         if s < 0:
             s = 0.0
-        total_cs = int(round(s * 100))
+        total_cs = round(s * 100)
         h = total_cs // 360000
         m = (total_cs % 360000) // 6000
         ssec = (total_cs % 6000) // 100
         cs = total_cs % 100
         return f"{h}:{m:02d}:{ssec:02d}.{cs:02d}"
 
-    def render_clip(self, clip: Clip, video: Video, template: Optional[Template] = None, base_path: Optional[str] = None) -> str:
+    def render_clip(self, clip: Clip, video: Video, template: Template | None = None, base_path: str | None = None) -> str:
         """Render a single vertical clip. Returns output path.
 
         All ffmpeg calls are wrapped with a timeout so a hung or failing
@@ -174,6 +174,28 @@ class RenderService:
             print(f"DEBUG render_clip: stdout={exc.stdout}", flush=True)
             raise RuntimeError(f"FFmpeg render failed: {exc.stderr or 'no stderr output'}") from exc
 
+        # Phase 3.5 - Optional final loudness normalization (EBU R128 two-pass).
+        # Runs only when the LOUDNESS_NORMALIZE config flag is enabled and FFmpeg
+        # is available; otherwise the render is kept exactly as-is.
+        if LOUDNESS_NORMALIZE and is_ffmpeg_available():
+            try:
+                normalized_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}_loudnorm.mp4"
+                loudness_stats = apply_loudness_normalization(
+                    str(output_path),
+                    str(normalized_path),
+                )
+                if loudness_stats is not None:
+                    os.replace(str(normalized_path), str(output_path))
+                    print(
+                        f"DEBUG render_clip: loudnorm applied: input_i={loudness_stats.get('input_i')} "
+                        f"input_tp={loudness_stats.get('input_tp')} input_lra={loudness_stats.get('input_lra')}",
+                        flush=True,
+                    )
+                else:
+                    print("DEBUG render_clip: loudnorm skipped: ffmpeg not available", flush=True)
+            except Exception as exc:  # noqa: BLE001 - loudness failure keeps the un-normalized render
+                print(f"DEBUG render_clip: loudness normalization failed, keeping un-normalized render: {exc}", flush=True)
+
         # Generate a thumbnail (best-effort; failure does not fail the render)
         thumb_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.jpg"
         try:
@@ -190,8 +212,8 @@ class RenderService:
                 timeout=FFMPEG_TIMEOUT_SECONDS,
                 check=True,
             )
-        except Exception:
-            print(f"DEBUG render_clip: thumbnail generation failed", flush=True)
+        except Exception:  # noqa: BLE001 - thumbnail generation is best-effort
+            print("DEBUG render_clip: thumbnail generation failed", flush=True)
             thumb_path = None
 
         clip.output_path = str(output_path)
@@ -206,7 +228,7 @@ class RenderService:
         clear_gpu_memory()
         return str(output_path)
 
-    def _default_config(self) -> Dict[str, Any]:
+    def _default_config(self) -> dict[str, Any]:
         return {
             "caption": {
                 "font": "Arial",
@@ -277,7 +299,7 @@ class RenderService:
 
         ass_path = render_root / f"subs_{clip.id}_{uuid.uuid4().hex[:8]}.ass"
 
-        ass_header = f"""[Script Info]
+        ass_header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -290,8 +312,7 @@ Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-        ass_lines: List[str] = []
-        last_end_time = 0.0
+        ass_lines: list[str] = []
         for seg in overlapping_segments:
             words = seg.get("text", "").strip().replace("\n", " ").split()
             if not words:
@@ -335,8 +356,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"DEBUG: _build_ass wrote {len(ass_lines)} lines to {ass_path}", flush=True)
         return str(ass_path)
 
-    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: Optional[str], template: Optional[Template] = None, layout: str = "split_screen", operations: List = [], start_time: float = 0.0, sendcmd_path: str = "", template_config: dict = None) -> tuple:
+    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None) -> tuple:
         """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
+        if operations is None:
+            operations = []
         clip_start_time = clip.start_time
         ass_filename = os.path.basename(ass_path) if ass_path else ""
 
@@ -370,10 +393,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end: float,
         filter_complex: str,
         output_path: str,
-        ass_path: Optional[str] = None,
-        sfx_files: Optional[List[str]] = None,
-        extra_audio_inputs: Optional[List[str]] = None,
-    ) -> List[str]:
+        ass_path: str | None = None,
+        sfx_files: list[str] | None = None,
+        extra_audio_inputs: list[str] | None = None,
+    ) -> list[str]:
         """Build the ffmpeg command list for rendering a vertical clip."""
         cmd = [
             FFMPEG_PATH, "-y",

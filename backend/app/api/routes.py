@@ -1,36 +1,38 @@
-from ..core.paths import PROCESSED_DIR, TRANSCRIPTS_DIR
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi import BackgroundTasks
-from fastapi.responses import JSONResponse
-import os
+import asyncio
+import contextlib
 import glob
 import json
+import os
 import shutil
 import traceback
 from pathlib import Path
+from typing import Annotated
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app.database import get_db
-from app.services.whisper_service import WhisperService
-from app.services.llm_service import LLMService
-from app.services.render_service import RenderService
-from app.services.qc_bot import audit_clip
+
 from app import models
+from app.database import SessionLocal, get_db
+from app.services.llm_service import LLMService
+from app.services.qc_bot import audit_clip
+from app.services.render_service import RenderService
+from app.services.whisper_service import WhisperService
+
+from ..core.paths import PROCESSED_DIR, SOURCES_DIR, TRANSCRIPTS_DIR
 
 router = APIRouter()
 
 
 @router.get("/videos")
-def get_videos(db: Session = Depends(get_db)):
+def get_videos(db: Annotated[Session, Depends(get_db)]):
     return db.query(models.Video).filter(
         models.Video.status.notin_(["processing", "rendering"])
     ).all()
 
 @router.post("/videos/upload", response_model=int)
 def upload_video(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
 ):
     os.makedirs(SOURCES_DIR, exist_ok=True)
     print(f"RECEIVED UPLOAD: {file.filename}", flush=True)
@@ -98,8 +100,7 @@ async def _run_pipeline(video_id: str):
         transcript_dir = Path(str(TRANSCRIPTS_DIR))
         transcript_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = transcript_dir / f"video_{video.id}_transcript.json"
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            json.dump(whisper_result, f, indent=2)
+        await asyncio.to_thread(transcript_path.write_text, json.dumps(whisper_result, indent=2))
         video.transcript_path = str(transcript_path)
         db.add(video)
         db.commit()
@@ -141,7 +142,7 @@ async def _run_pipeline(video_id: str):
             print(f"DEBUG: Rendering clip {idx+1}/{len(clips)}", flush=True)
             try:
                 RenderService(db).render_clip(clip, video, template)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - render failures are tracked on the clip
                 print(f"DEBUG: Failed to render clip {clip.id}: {e}", flush=True)
                 clip.status = "error"
                 clip.error_message = str(e)
@@ -162,7 +163,7 @@ async def _run_pipeline(video_id: str):
                         clip.output_path = None
                         db.commit()
                         continue
-                except Exception as qc_exc:
+                except Exception as qc_exc:  # noqa: BLE001 - QC failures are tracked on the clip
                     print(f"DEBUG: QC error on clip {clip.id}: {qc_exc}", flush=True)
                     clip.status = "failed"
                     clip.error_message = f"QC error: {qc_exc}"
@@ -172,17 +173,17 @@ async def _run_pipeline(video_id: str):
                     continue
 
         # Update video status to done
-        print(f"DEBUG: All clips rendered, updating video status", flush=True)
+        print("DEBUG: All clips rendered, updating video status", flush=True)
         video.status = "done"
         db.add(video)
         db.commit()
 
         # Cleanup temp audio chunks
         for f in glob.glob(str(PROCESSED_DIR / "*.wav")):
-            try: os.remove(f)
-            except: pass
+            with contextlib.suppress(OSError):
+                os.remove(f)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - pipeline crash handler
         # Set status to error if anything fails
         print(f"PIPELINE CRASHED: {exc}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -194,15 +195,15 @@ async def _run_pipeline(video_id: str):
         db.close()
 
 @router.get("/videos/{video_id}/clips")
-def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+def get_clips(video_id: str, db: Annotated[Session, Depends(get_db)]): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
 
 @router.get("/templates")
-def get_templates(db: Session = Depends(get_db)):
+def get_templates(db: Annotated[Session, Depends(get_db)]):
     return db.query(models.Template).all()
 
 
 @router.post("/templates")
-def create_template(data: dict, db: Session = Depends(get_db)):
+def create_template(data: dict, db: Annotated[Session, Depends(get_db)]):
     new_template = models.Template(
         name=data.get("name", "Untitled Template"),
         description=data.get("description", ""),
@@ -217,7 +218,7 @@ def create_template(data: dict, db: Session = Depends(get_db)):
 
 
 @router.put("/templates/{template_id}")
-def update_template(template_id: int, data: dict, db: Session = Depends(get_db)):
+def update_template(template_id: int, data: dict, db: Annotated[Session, Depends(get_db)]):
     template = db.query(models.Template).filter(models.Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -232,7 +233,7 @@ def update_template(template_id: int, data: dict, db: Session = Depends(get_db))
 
 
 @router.delete("/templates/{template_id}")
-def delete_template(template_id: int, db: Session = Depends(get_db)):
+def delete_template(template_id: int, db: Annotated[Session, Depends(get_db)]):
     template = db.query(models.Template).filter(models.Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -242,16 +243,20 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/templates/seed")
-def seed_default_templates(db: Session = Depends(get_db)):
+def seed_default_templates(db: Annotated[Session, Depends(get_db)]):
     try:
         import seed_templates
         seed_templates.seed()
         return {"status": "success", "message": "Templates seeded successfully"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - surface seeding failures to the client
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/clips")
-def get_all_clips(video_id: Optional[int] = None, videoId: Optional[str] = None, db: Session = Depends(get_db)):
+def get_all_clips(
+    db: Annotated[Session, Depends(get_db)],
+    video_id: int | None = None,
+    videoId: str | None = None,
+):
     vid = video_id or videoId
     if vid:
         query = db.query(models.Clip).filter(models.Clip.video_id == int(vid))
@@ -271,7 +276,7 @@ def get_trending_sources():
     ]
 
 @router.delete("/clips/{clip_id}")
-def delete_clip(clip_id: int, db: Session = Depends(get_db)):
+def delete_clip(clip_id: int, db: Annotated[Session, Depends(get_db)]):
     clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -284,7 +289,7 @@ def delete_clip(clip_id: int, db: Session = Depends(get_db)):
     return {"message": "Clip deleted"}
 
 @router.post("/clips/{clip_id}/render")
-def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Annotated[Session, Depends(get_db)]):
     clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -299,7 +304,7 @@ def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Session = D
     
     rs = RenderService(db)
     try:
-        render_clip_output_path = rs.render_clip(clip, video, template)
+        rs.render_clip(clip, video, template)
     except Exception as e:
         print(f"RenderService error: {e}", flush=True)
         raise

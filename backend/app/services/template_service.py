@@ -2,19 +2,15 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models import Template
-from app.schemas import TemplateCreate, TemplateUpdate, TemplateOut
-from app.core.config import TEMPLATES_DIR
-
+from app.schemas import TemplateCreate, TemplateUpdate
 
 # Default template configs. Each is a full design system for 9:16 vertical shorts.
-DEFAULT_TEMPLATES: List[Dict[str, Any]] = [
+DEFAULT_TEMPLATES: list[dict[str, Any]] = [
     {
         "name": "Streamer Hype",
         "description": "High-energy gaming/streamer style with big bold captions and glow.",
@@ -357,11 +353,11 @@ def seed_defaults(db: Session):
     db.commit()
 
 
-def list_templates(db: Session) -> List[Template]:
+def list_templates(db: Session) -> list[Template]:
     return db.query(Template).order_by(Template.is_default.desc(), Template.name.asc()).all()
 
 
-def get_template(db: Session, template_id: int) -> Optional[Template]:
+def get_template(db: Session, template_id: int) -> Template | None:
     return db.query(Template).filter(Template.id == template_id).first()
 
 
@@ -378,7 +374,7 @@ def create_template(db: Session, data: TemplateCreate) -> Template:
     return tmpl
 
 
-def update_template(db: Session, template_id: int, data: TemplateUpdate) -> Optional[Template]:
+def update_template(db: Session, template_id: int, data: TemplateUpdate) -> Template | None:
     tmpl = get_template(db, template_id)
     if not tmpl:
         return None

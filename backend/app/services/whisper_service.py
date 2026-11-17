@@ -1,13 +1,13 @@
 from __future__ import annotations
-import gc
-import torch
-import os
-import sys
-import logging
-import subprocess
-import concurrent.futures
 
+import gc
+import logging
+import os
 import pathlib
+import subprocess
+import sys
+
+import torch
 
 
 def _register_nvidia_dll_paths() -> None:
@@ -28,28 +28,22 @@ def _register_nvidia_dll_paths() -> None:
 
 _register_nvidia_dll_paths()
 
-from faster_whisper import WhisperModel, BatchedInferencePipeline
 import whisperx
-import logging
+from faster_whisper import BatchedInferencePipeline
 
 logger = logging.getLogger(__name__)
 
 """Transcription service using faster-whisper with word/timestamp segments."""
 
-import json
 import re
-from dataclasses import dataclass, asdict
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence
 
 from app.core.config import (
-    SOURCES_DIR,
     WHISPER_MODEL,
-    WHISPER_DEVICE,
-    WHISPER_COMPUTE_TYPE,
 )
 from app.core.processing_utils import clear_gpu_memory
-
 
 # --------------------------------------------------------------------------- PyAV compatibility
 # faster-whisper decodes audio via ``av.open(input, mode="r", metadata_errors="ignore")``.
@@ -67,7 +61,7 @@ def _ensure_av_open_compat() -> None:
         return
     try:
         import av as _av_mod  # type: ignore
-    except Exception:
+    except Exception:  # noqa: BLE001 - av is optional
         return  # av unavailable; faster-whisper will raise its own clear error
     _orig_av_open = _av_mod.open
 
@@ -97,14 +91,14 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
-    words: List[WordSegment]
+    words: list[WordSegment]
 
 
 @dataclass
 class TranscriptionResult:
     language: str
     duration: float
-    segments: List[TranscriptSegment]
+    segments: list[TranscriptSegment]
 
     def to_dict(self):
         return asdict(self)
@@ -114,7 +108,7 @@ _HEX_COLOR_RE = re.compile(r"^#([0-9A-Fa-f]{6})$")
 _ASS_COLOR_RE = re.compile(r"^&H([0-9A-Fa-f]{6,8})&$")
 
 
-def to_ass_color(value: Optional[str], default: str = "&H00FFFFFF&") -> str:
+def to_ass_color(value: str | None, default: str = "&H00FFFFFF&") -> str:
     """Normalize a color to ASS &HBBGGRR& (optionally &HAABBGGRR&) form.
 
     Accepts "#RRGGBB" hex or an existing "&H...&" ASS color; anything else
@@ -139,7 +133,7 @@ def escape_ass_text(text: str) -> str:
 
 def format_ass_timestamp(ts: float) -> str:
     """Format seconds as an ASS time stamp: H:MM:SS.cc (centiseconds)."""
-    cs = int(round(ts * 100))
+    cs = round(ts * 100)
     h = cs // 360_000
     cs %= 360_000
     m = cs // 6_000
@@ -154,7 +148,7 @@ def group_kinetic_phrases(
     max_words_per_phrase: int = 3,
     max_phrase_secs: float = 2.5,
     max_gap_secs: float = 0.6,
-) -> List[List[WordSegment]]:
+) -> list[list[WordSegment]]:
     """Split a chronologically ordered word list into short kinetic phrases.
 
     A new phrase starts when the gap between words exceeds ``max_gap_secs``,
@@ -162,8 +156,8 @@ def group_kinetic_phrases(
     span exceeds ``max_phrase_secs``. Phrases stay within a single segment
     (caller passes per-segment word lists).
     """
-    phrases: List[List[WordSegment]] = []
-    current: List[WordSegment] = []
+    phrases: list[list[WordSegment]] = []
+    current: list[WordSegment] = []
     for w in words:
         if current:
             gap = w.start - current[-1].end
@@ -195,7 +189,7 @@ class WhisperService:
 
         try:
             self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cuda", compute_type="int8")
-        except Exception:
+        except Exception:  # noqa: BLE001 - CUDA -> CPU fallback is best-effort
             print("DEBUG: CUDA failed, falling back to CPU", flush=True)
             self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cpu", compute_type="int8")
 
@@ -247,13 +241,10 @@ class WhisperService:
         """Alias for unload_model() for readability at call sites."""
         self.unload_model()
 
-    def transcribe(self, audio_path: str) -> List[dict]:
+    def transcribe(self, audio_path: str) -> list[dict]:
         print(f"DEBUG: [transcribe] Chunking audio file: {audio_path}")
 
         import tempfile
-        from pathlib import Path
-        import gc
-        import torch
 
         # Create a temporary directory for chunks
         temp_dir = tempfile.mkdtemp()
@@ -265,7 +256,7 @@ class WhisperService:
             "-f", "segment", "-segment_time", "600",
             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             chunk_pattern
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
         chunks = sorted(Path(temp_dir).glob("chunk_*.wav"))
         print(f"DEBUG: [transcribe] Split into {len(chunks)} chunks.")
@@ -283,7 +274,7 @@ class WhisperService:
                 str(chunk_path),
                 batch_size=4,
                 vad_filter=True,
-                vad_parameters=dict(threshold=0.3),
+                vad_parameters={"threshold": 0.3},
                 language="en"
             )
 
@@ -332,7 +323,7 @@ class WhisperService:
 
     def format_srt(self, result: TranscriptionResult) -> str:
         def fmt(ts: float) -> str:
-            ms = int(round(ts * 1000))
+            ms = round(ts * 1000)
             h = ms // 3_600_000
             ms %= 3_600_000
             m = ms // 60_000
@@ -382,7 +373,7 @@ class WhisperService:
                 end = phrase[-1].end
                 parts = []
                 for w in phrase:
-                    cs = max(1, int(round((w.end - w.start) * 100)))
+                    cs = max(1, round((w.end - w.start) * 100))
                     parts.append(f"{{\\k{cs}}}{escape_ass_text(w.word)}")
                 text = "".join(parts)
                 lines.append(f"Dialogue: 0,{format_ass_timestamp(start)},{format_ass_timestamp(end)},Default,,0,0,0,,{text}")
@@ -431,22 +422,21 @@ class WhisperService:
                     f"Default,,0,0,0,,{text}"
                 )
                 continue
-            has_words = True
             for phrase in group_kinetic_phrases(
                 words,
-                max_words_per_phrase=max_words_per_phrase,
-                max_phrase_secs=max_phrase_secs,
-                max_gap_secs=max_gap_secs,
+                max_words_per_phrase=3,
+                max_phrase_secs=2.5,
+                max_gap_secs=0.6,
             ):
                 start = phrase[0].start
                 end = phrase[-1].end
                 # Karaoke \k tags (centiseconds): each word fills yellow while
                 # spoken, the rest of the phrase stays primary (white) color.
-                parts: List[str] = []
+                parts: list[str] = []
                 first = phrase[0]
-                parts.append(f"{{\\k{max(1, int(round((first.end - first.start) * 100)))}}}{escape_ass_text(first.word)}")
+                parts.append(f"{{\\k{max(1, round((first.end - first.start) * 100))}}}{escape_ass_text(first.word)}")
                 for w in phrase[1:]:
-                    cs = max(1, int(round((w.end - w.start) * 100)))
+                    cs = max(1, round((w.end - w.start) * 100))
                     parts.append(f" {{\\k{cs}}}{escape_ass_text(w.word)}")
                 text = "".join(parts)
                 lines.append(

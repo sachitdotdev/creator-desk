@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Tuple
-
-import cv2
 
 
 def audit_clip(
     clip_path: str,
     min_duration: float,
     expected_crop_x: int,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Audit a rendered clip for:
       1) minimum duration (via ffprobe), and
       2) absence of large black borders (sample 5 frames).
@@ -34,7 +31,7 @@ def audit_clip(
             timeout=120,
             check=False,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - ffprobe failure degrades to an audit failure
         return (False, "ffprobe timed out")
 
     try:

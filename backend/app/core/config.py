@@ -1,7 +1,6 @@
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -34,16 +33,15 @@ if not os.environ.get("FFMPEG_PATH") and not shutil.which("ffmpeg"):
 # Import paths from core.paths
 from app.core.paths import (
     DATA_DIR,
-    SOURCES_DIR,
-    RENDERS_DIR,
-    TRANSCRIPTS_DIR,
-    TEMPLATES_DIR,
     DB_PATH,
-    MUSIC_DIR,
-    SFX_DIR,
     MODELS_DIR,
-    FACE_MODEL,
+    MUSIC_DIR,
     PROCESSED_DIR,
+    RENDERS_DIR,
+    SFX_DIR,
+    SOURCES_DIR,
+    TEMPLATES_DIR,
+    TRANSCRIPTS_DIR,
 )
 
 # Ensure directories exist
@@ -59,7 +57,7 @@ OLLAMA_HOST = OLLAMA_HOST.replace("0.0.0.0", "127.0.0.1")
 OLLAMA_BASE_URL = OLLAMA_HOST
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen14b-awq")
 
-OLLAMA_ACTIVE_MODEL: Optional[str] = None
+OLLAMA_ACTIVE_MODEL: str | None = None
 
 # Whisper
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
@@ -76,6 +74,12 @@ OUTPUT_WIDTH = int(os.getenv("OUTPUT_WIDTH", "1080"))
 OUTPUT_HEIGHT = int(os.getenv("OUTPUT_HEIGHT", "1920"))
 OUTPUT_FPS = int(os.getenv("OUTPUT_FPS", "30"))
 OUTPUT_CRF = int(os.getenv("OUTPUT_CRF", "24"))
+
+# Phase 3.5 - Loudness normalization (EBU R128 two-pass). Optional final audio step.
+LOUDNESS_NORMALIZE = os.getenv("LOUDNESS_NORMALIZE", "false").strip().lower() in ("1", "true", "yes", "on")
+LOUDNESS_TARGET_I = float(os.getenv("LOUDNESS_TARGET_I", "-14"))
+LOUDNESS_TARGET_TP = float(os.getenv("LOUDNESS_TARGET_TP", "-1.5"))
+LOUDNESS_TARGET_LRA = float(os.getenv("LOUDNESS_TARGET_LRA", "11"))
 
 # Batch (drop-folder) processing
 BATCH_INPUT_DIR = SOURCES_DIR      # drop raw videos here
