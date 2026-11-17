@@ -18,6 +18,11 @@ DEFAULT_DUCK_RELEASE = 400   # ms
 # loudness pass afterwards.
 DEFAULT_LOUDNORM = "I=-14:TP=-1.5:LRA=11"
 
+# Safety ceiling applied to summed layers when inline loudnorm is disabled.
+# amix runs with normalize=0 so overlapping SFX/BGM peaks can exceed 0 dBFS;
+# the limiter keeps the mix below full scale before AAC encoding.
+DEFAULT_MIX_LIMIT = 0.95
+
 
 def _as_volume(value, default: float = DEFAULT_SFX_VOLUME) -> float:
     """Coerce an SFX event volume to a safe linear gain.
@@ -59,6 +64,12 @@ def build_audio_filter(
       4. sum every layer,
       5. normalize loudness last - inline here, or skipped when the caller runs
          the two-pass ``loudnorm`` pass afterwards (``inline_loudnorm=False``).
+
+    When the two-pass pass runs (``inline_loudnorm=False``) a summed mix gets
+    an ``alimiter`` ceiling after ``amix`` so overlapping layers cannot clip.
+
+    The BGM is looped before ``atrim`` so tracks shorter than the clip still
+    cover its full duration.
 
     Without SFX events and without a BGM track the graph is a plain ``anull``
     passthrough (plus the inline loudnorm), i.e. unchanged from the
@@ -114,6 +125,9 @@ def build_audio_filter(
         extra_inputs.append(music_path)
         filters.append(
             f"[{idx}:a]volume={float(music_volume):g},"
+            # Loop first: a BGM track shorter than the clip must still cover the
+            # full duration, and swapping it out for silence is never desirable.
+            f"aloop=loop=-1:size=2e+09,"
             f"atrim=0:{output_duration},asetpts=PTS-STARTPTS[music_raw]"
         )
         if duck and need_split:
@@ -149,7 +163,14 @@ def build_audio_filter(
     # passthrough here so the audio is normalized exactly once.
     if inline_loudnorm:
         filters.append(f"[audio_mix]loudnorm={DEFAULT_LOUDNORM}[aout]")
+    elif len(mix_labels) > 1:
+        # No loudnorm here means the caller normalizes afterwards, but the
+        # summed mix still has to stay below 0 dBFS. Guard it with a limiter.
+        filters.append(
+            f"[audio_mix]alimiter=limit={DEFAULT_MIX_LIMIT:g}[aout]"
+        )
     else:
+        # Passthrough must stay byte-identical for the no-SFX/no-BGM case.
         filters.append("[audio_mix]anull[aout]")
 
 

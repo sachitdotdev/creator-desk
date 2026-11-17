@@ -26,6 +26,7 @@ MUSIC_HZ = 220.0   # BGM bed tone
 SILENT_GRAPH = "[0:a]anull[voice_mix];[voice_mix]anull[audio_mix]"
 LOUDNORM_TAIL = "[audio_mix]loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
 NO_LOUDNORM_TAIL = "[audio_mix]anull[aout]"
+LIMITED_TAIL = "[audio_mix]alimiter=limit=0.95[aout]"
 
 
 def _make_file(path, payload=b"\x00"):
@@ -76,7 +77,7 @@ def test_bgm_only_ducks_music_against_voice(music_path):
     assert extra_inputs == [music_path]
     assert graph == (
         "[0:a]asplit=2[voice_mix][voice_ctrl];"
-        "[1:a]volume=0.25,atrim=0:61.0,asetpts=PTS-STARTPTS[music_raw];"
+        "[1:a]volume=0.25,aloop=loop=-1:size=2e+09,atrim=0:61.0,asetpts=PTS-STARTPTS[music_raw];"
         "[music_raw][voice_ctrl]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400[music_duck];"
         "[voice_mix][music_duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[audio_mix];"
         f"{LOUDNORM_TAIL}"
@@ -93,7 +94,7 @@ def test_sfx_and_bgm_chain_order(sfx_path, music_path):
     assert graph == (
         "[0:a]asplit=2[voice_mix][voice_ctrl];"
         "[1:a]adelay=1500|1500,volume=0.6[sfx0];"
-        "[2:a]volume=0.25,atrim=0:61.0,asetpts=PTS-STARTPTS[music_raw];"
+        "[2:a]volume=0.25,aloop=loop=-1:size=2e+09,atrim=0:61.0,asetpts=PTS-STARTPTS[music_raw];"
         "[music_raw][voice_ctrl]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=400[music_duck];"
         "[voice_mix][sfx0][music_duck]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[audio_mix];"
         f"{LOUDNORM_TAIL}"
@@ -112,7 +113,50 @@ def test_inline_loudnorm_is_skipped_when_two_pass_pass_runs(sfx_path, music_path
     )
 
     assert "loudnorm" not in graph
-    assert graph.endswith(NO_LOUDNORM_TAIL)
+    assert "alimiter" in graph
+    assert graph.endswith(LIMITED_TAIL)
+
+
+def test_bgm_is_looped_before_trim(music_path):
+    graph, _ = build_audio_filter(sfx_events=[], music_path=music_path, output_duration=30.0)
+
+    assert "aloop=loop=-1:size=2e+09,atrim=0:30.0" in graph
+    # Loop must happen before the trim, otherwise a short track leaves silence.
+    assert graph.index("aloop=") < graph.index("atrim=")
+
+
+def test_mix_is_limited_when_inline_loudnorm_is_off(sfx_path, music_path):
+    graph, _ = build_audio_filter(
+        sfx_events=[{"path": sfx_path, "start": 1.0}],
+        music_path=music_path,
+        inline_loudnorm=False,
+    )
+
+    assert "loudnorm" not in graph
+    assert graph.endswith(LIMITED_TAIL)
+    assert graph.index("amix=") < graph.index("alimiter=")
+
+
+def test_mix_is_not_limited_when_inline_loudnorm_is_on(sfx_path, music_path):
+    graph, _ = build_audio_filter(
+        sfx_events=[{"path": sfx_path, "start": 1.0}],
+        music_path=music_path,
+        inline_loudnorm=True,
+    )
+
+    assert "alimiter" not in graph
+    assert graph.endswith(LOUDNORM_TAIL)
+
+
+def test_no_sfx_no_bgm_graph_is_byte_identical():
+    # Neither hardening change may touch the plain voice passthrough.
+    inline, _ = build_audio_filter(sfx_events=[], inline_loudnorm=True)
+    two_pass, _ = build_audio_filter(sfx_events=[], inline_loudnorm=False)
+
+    assert inline == f"{SILENT_GRAPH};{LOUDNORM_TAIL}"
+    assert two_pass == f"{SILENT_GRAPH};{NO_LOUDNORM_TAIL}"
+    assert "aloop" not in inline and "aloop" not in two_pass
+    assert "alimiter" not in inline and "alimiter" not in two_pass
 
 
 def test_ducking_can_be_disabled(music_path):
