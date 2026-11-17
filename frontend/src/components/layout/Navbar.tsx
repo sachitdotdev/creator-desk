@@ -1,6 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Droplets, Circle, AlertCircle, Play, RefreshCw } from "lucide-react";
+import { Droplets, Circle, Play } from "lucide-react";
 
 interface NavbarProps {
   status: { ollama_available: boolean } | null;

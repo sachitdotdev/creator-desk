@@ -53,3 +53,10 @@ GOAL.txt
 .openhands/
 frontend/dist/
 dist/
+
+# BGM library: user-supplied tracks only, never bundled with the repo.
+# Case-insensitive so "Track.MP3" cannot slip past; sidecar .json stays tracked.
+backend/assets/music/*.[mM][pP]3
+backend/assets/music/*.[wW][aA][vV]
+backend/assets/music/*.[mM]4[aA]
+backend/assets/music/*.[oO][gG][gG]

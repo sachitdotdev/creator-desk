@@ -1,13 +1,13 @@
-import sqlite3
 import glob
-import os
+import sqlite3
+import sys
 
 # Find the database file
 db_files = glob.glob("C:/Projects Openhands/Active/Creator Desk/data/*.db") + glob.glob("C:/Projects Openhands/Active/Creator Desk/data/*.sqlite")
 
 if not db_files:
     print("❌ Could not find a database file in the data folder.")
-    exit()
+    sys.exit()
 
 DB_PATH = db_files[0]
 print(f"Found database: {DB_PATH}")
@@ -33,5 +33,5 @@ try:
     conn.close()
     print("✅ Database paths successfully updated!")
     
-except Exception as e:
+except Exception as e:  # noqa: BLE001 - surface DB migration failures
     print(f"❌ Error updating database: {e}")

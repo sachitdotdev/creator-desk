@@ -1,22 +1,26 @@
-from ..core.paths import PROCESSED_DIR, TRANSCRIPTS_DIR
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi import BackgroundTasks
-from fastapi.responses import JSONResponse
-import os
+import asyncio
+import contextlib
 import glob
 import json
+import mimetypes
+import os
 import shutil
 import traceback
 from pathlib import Path
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app.database import get_db
-from app.services.whisper_service import WhisperService
-from app.services.llm_service import LLMService
-from app.services.render_service import RenderService
-from app.services.qc_bot import audit_clip
+
 from app import models
+from app.database import SessionLocal, get_db
+from app.services import music_service
+from app.services.llm_service import LLMService
+from app.services.qc_bot import audit_clip
+from app.services.render_service import RenderService
+from app.services.whisper_service import WhisperService
+
+from ..core.paths import PROCESSED_DIR, SOURCES_DIR, TRANSCRIPTS_DIR
 
 router = APIRouter()
 
@@ -30,7 +34,7 @@ def get_videos(db: Session = Depends(get_db)):
 @router.post("/videos/upload", response_model=int)
 def upload_video(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     os.makedirs(SOURCES_DIR, exist_ok=True)
     print(f"RECEIVED UPLOAD: {file.filename}", flush=True)
@@ -98,8 +102,11 @@ async def _run_pipeline(video_id: str):
         transcript_dir = Path(str(TRANSCRIPTS_DIR))
         transcript_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = transcript_dir / f"video_{video.id}_transcript.json"
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            json.dump(whisper_result, f, indent=2)
+        await asyncio.to_thread(
+            transcript_path.write_text,
+            json.dumps(whisper_result, indent=2),
+            encoding="utf-8",
+        )
         video.transcript_path = str(transcript_path)
         db.add(video)
         db.commit()
@@ -141,7 +148,7 @@ async def _run_pipeline(video_id: str):
             print(f"DEBUG: Rendering clip {idx+1}/{len(clips)}", flush=True)
             try:
                 RenderService(db).render_clip(clip, video, template)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - render failures are tracked on the clip
                 print(f"DEBUG: Failed to render clip {clip.id}: {e}", flush=True)
                 clip.status = "error"
                 clip.error_message = str(e)
@@ -162,7 +169,7 @@ async def _run_pipeline(video_id: str):
                         clip.output_path = None
                         db.commit()
                         continue
-                except Exception as qc_exc:
+                except Exception as qc_exc:  # noqa: BLE001 - QC failures are tracked on the clip
                     print(f"DEBUG: QC error on clip {clip.id}: {qc_exc}", flush=True)
                     clip.status = "failed"
                     clip.error_message = f"QC error: {qc_exc}"
@@ -172,17 +179,17 @@ async def _run_pipeline(video_id: str):
                     continue
 
         # Update video status to done
-        print(f"DEBUG: All clips rendered, updating video status", flush=True)
+        print("DEBUG: All clips rendered, updating video status", flush=True)
         video.status = "done"
         db.add(video)
         db.commit()
 
         # Cleanup temp audio chunks
         for f in glob.glob(str(PROCESSED_DIR / "*.wav")):
-            try: os.remove(f)
-            except: pass
+            with contextlib.suppress(OSError):
+                os.remove(f)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - pipeline crash handler
         # Set status to error if anything fails
         print(f"PIPELINE CRASHED: {exc}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -241,17 +248,45 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
     return {"status": "success", "message": "Template deleted"}
 
 
+# Phase 3.6 - BGM library. Tracks are plain files in MUSIC_DIR; metadata lives
+# in optional <filename>.json sidecars, so there is no database table to manage.
+@router.get("/music")
+def list_music():
+    return music_service.list_tracks()
+
+
+@router.post("/music", status_code=201)
+def upload_music(file: UploadFile = File(...)):
+    try:
+        return music_service.save_upload(file.filename, file.file)
+    except music_service.MusicError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/music/{name}/preview")
+def preview_music(name: str):
+    path = music_service.resolve_track(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
 @router.post("/templates/seed")
 def seed_default_templates(db: Session = Depends(get_db)):
     try:
         import seed_templates
         seed_templates.seed()
         return {"status": "success", "message": "Templates seeded successfully"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - surface seeding failures to the client
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/clips")
-def get_all_clips(video_id: Optional[int] = None, videoId: Optional[str] = None, db: Session = Depends(get_db)):
+def get_all_clips(
+    video_id: int | None = None,
+    videoId: str | None = None,
+    db: Session = Depends(get_db),
+):
     vid = video_id or videoId
     if vid:
         query = db.query(models.Clip).filter(models.Clip.video_id == int(vid))
@@ -299,7 +334,7 @@ def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Session = D
     
     rs = RenderService(db)
     try:
-        render_clip_output_path = rs.render_clip(clip, video, template)
+        rs.render_clip(clip, video, template)
     except Exception as e:
         print(f"RenderService error: {e}", flush=True)
         raise

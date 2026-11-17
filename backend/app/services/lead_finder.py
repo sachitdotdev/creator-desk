@@ -17,18 +17,18 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 import yt_dlp
-from yt_dlp.utils import DownloadError
 
-from app.core.config import BASE_DIR, SOURCES_DIR
+from app.core.config import SOURCES_DIR
 
 logger = logging.getLogger("creatordesk.lead_finder")
 
-DEFAULT_QUERIES: List[str] = ["podcast clips", "reddit stories", "scifi facts"]
+DEFAULT_QUERIES: list[str] = ["podcast clips", "reddit stories", "scifi facts"]
 MAX_PER_QUERY = 20
 # upload_date is missing in flat extraction, so only the most-viewed shorts
 # candidates get an individual metadata fetch to keep the run fast.
@@ -44,19 +44,19 @@ LEADS_PATH = SOURCES_DIR / "leads.json"
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _parse_upload_date(raw: Any) -> Optional[datetime]:
+def _parse_upload_date(raw: Any) -> datetime | None:
     """Parse yt-dlp ``upload_date`` (YYYYMMDD) or ``timestamp`` (unix secs)."""
     if raw is None:
         return None
     try:
         if isinstance(raw, (int, float)):
-            return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+            return datetime.fromtimestamp(float(raw), tz=UTC)
         text = str(raw).strip()
         if len(text) == 8 and text.isdigit():
-            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=timezone.utc)
+            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=UTC)
     except (TypeError, ValueError, OSError):
         return None
     return None
@@ -76,18 +76,18 @@ class LeadFinderService:
     # ------------------------------------------------------------------ public
     def find_leads(
         self,
-        queries: Optional[Iterable[str]] = None,
+        queries: Iterable[str] | None = None,
         max_per_query: int = MAX_PER_QUERY,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Search every query, rank by view velocity, persist top N to leads.json."""
         query_list = list(queries) if queries is not None else list(DEFAULT_QUERIES)
 
         # 1. Fast flat listing: URL, title, view_count, duration -- no downloads.
-        raw_candidates: List[Dict[str, Any]] = []
+        raw_candidates: list[dict[str, Any]] = []
         for query in query_list:
             try:
                 raw_candidates.extend(self._list_query(query, max_per_query))
-            except Exception as exc:  # one bad query must not abort the run
+            except Exception as exc:  # noqa: BLE001 - one bad query must not abort the run
                 logger.warning("Lead finder query %r failed: %s", query, exc)
 
         # 2. Keep short-form candidates only.
@@ -113,7 +113,7 @@ class LeadFinderService:
         return leads
 
     @staticmethod
-    def load_leads(leads_path: str | Path = LEADS_PATH) -> List[Dict[str, Any]]:
+    def load_leads(leads_path: str | Path = LEADS_PATH) -> list[dict[str, Any]]:
         path = Path(leads_path)
         if not path.exists():
             return []
@@ -128,7 +128,7 @@ class LeadFinderService:
     @staticmethod
     def find_lead_by_url(
         url: str, leads_path: str | Path = LEADS_PATH
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         for lead in LeadFinderService.load_leads(leads_path):
             if lead.get("url") == url:
                 return lead
@@ -166,12 +166,12 @@ class LeadFinderService:
                 logger.warning("Failed to write %s: %s", path, exc)
 
     # ------------------------------------------------------------------ download
-    def download_lead(self, url: str, out_dir: str | Path = SOURCES_DIR) -> Tuple[Path, str]:
+    def download_lead(self, url: str, out_dir: str | Path = SOURCES_DIR) -> tuple[Path, str]:
         """Download a lead video with yt-dlp. Returns (local path, title)."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_tmpl = str(out_dir / "lead_%(id)s.%(ext)s")
-        ydl_opts: Dict[str, Any] = {
+        ydl_opts: dict[str, Any] = {
             "format": (
                 "bv*[height<=1080][ext=mp4]+ba[ext=m4a]"
                 "/b[height<=1080][ext=mp4]"
@@ -195,7 +195,7 @@ class LeadFinderService:
         return local_path, str(title)
 
     # ---------------------------------------------------------------- listing
-    def _list_query(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+    def _list_query(self, query: str, max_results: int) -> list[dict[str, Any]]:
         q = query.strip()
         if q.startswith(("http://", "https://")):
             url = q
@@ -206,7 +206,7 @@ class LeadFinderService:
         else:
             url = f"ytsearch{max_results}:{q}"
 
-        ydl_opts: Dict[str, Any] = {
+        ydl_opts: dict[str, Any] = {
             "extract_flat": True,
             "quiet": True,
             "no_warnings": True,
@@ -220,7 +220,7 @@ class LeadFinderService:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        entries: List[Dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
         if not info:
             return entries
         if info.get("_type") == "video" and not info.get("entries"):
@@ -248,9 +248,9 @@ class LeadFinderService:
         return entries
 
     # ---------------------------------------------------------------- metadata
-    def _fetch_one(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+    def _fetch_one(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Individually extract one video page to fill in upload_date."""
-        ydl_opts: Dict[str, Any] = {
+        ydl_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "extractor_retries": 1,
@@ -280,25 +280,25 @@ class LeadFinderService:
         return merged
 
     def _fetch_upload_dates(
-        self, entries: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, entries: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         if not entries:
             return []
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         workers = min(FETCH_WORKERS, len(entries))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(self._fetch_one, e): e for e in entries}
             for future in concurrent.futures.as_completed(futures):
                 try:
                     results.append(future.result())
-                except Exception as exc:  # skip videos we cannot inspect
+                except Exception as exc:  # noqa: BLE001 - skip videos we cannot inspect
                     logger.warning("Lead metadata fetch failed: %s", exc)
         return results
 
     # ---------------------------------------------------------------- ranking
-    def _rank(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _rank(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = _utc_now()
-        scored: List[Tuple[float, Dict[str, Any], float]] = []
+        scored: list[tuple[float, dict[str, Any], float]] = []
         for entry in entries:
             uploaded = entry.get("_uploaded")
             if not uploaded:
@@ -311,7 +311,7 @@ class LeadFinderService:
             scored.append((velocity, entry, hours))
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        leads: List[Dict[str, Any]] = []
+        leads: list[dict[str, Any]] = []
         for velocity, entry, hours in scored[: self.top_n]:
             leads.append(
                 {
@@ -332,7 +332,7 @@ class LeadFinderService:
         return leads
 
     # ---------------------------------------------------------------- persistence
-    def _save_leads(self, leads: List[Dict[str, Any]]) -> None:
+    def _save_leads(self, leads: list[dict[str, Any]]) -> None:
         self.leads_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.leads_path, "w", encoding="utf-8") as f:
             json.dump(leads, f, ensure_ascii=False, indent=2)

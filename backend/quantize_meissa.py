@@ -1,8 +1,7 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
 from llmcompressor import oneshot
 from llmcompressor.modifiers.awq import AWQModifier
-from datasets import load_dataset
-import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Configuration ---
 model_id = "Orion-zhen/Meissa-Qwen2.5-7B-Instruct"

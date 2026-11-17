@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+
 def _detect_root() -> Path:
     override = os.environ.get("CREATOR_DESK_ROOT")
     if override:

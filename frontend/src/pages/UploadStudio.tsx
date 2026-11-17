@@ -53,7 +53,7 @@ export default function UploadStudio() {
     const videoId = selectedVideoId;
     setIsProcessing(true);
     try {
-      await processVideo(videoId, { num_clips: 5 });
+      await processVideo(videoId, { video_id: videoId, num_clips: 5 });
 
       const startTime = Date.now();
       const interval = setInterval(async () => {

@@ -1,6 +1,6 @@
-from app.database import SessionLocal, engine, Base
-import app.models
+from app.database import Base, SessionLocal, engine
 from app.models import Template
+
 
 def seed():
     # Create the tables if they don't exist

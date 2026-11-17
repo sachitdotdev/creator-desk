@@ -5,7 +5,7 @@
 #
 # Creates the Python venv (Python 3.12 / 3.11) and installs backend requirements
 # if missing, installs frontend node_modules if missing, then opens two separate
-# PowerShell windows: one for the FastAPI backend (port 8000) and one
+# PowerShell windows: one for the FastAPI backend (port 8080) and one
 # for the Vite frontend (port 5173).
 
 $ErrorActionPreference = 'Stop'
@@ -97,9 +97,9 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# --- 3. Backend window: FastAPI on port 8000 ---------------------------------
+# --- 3. Backend window: FastAPI on port 8080 ---------------------------------
 Write-Host "[3/4] Starting FastAPI backend ..." -ForegroundColor Yellow
-$backendArgs = @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "& 'venv\Scripts\Activate.ps1'; uvicorn app.main:app --reload --port 8000")
+$backendArgs = @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "& 'venv\Scripts\Activate.ps1'; uvicorn app.main:app --reload --port 8080")
 Start-Process powershell.exe @backendArgs -WorkingDirectory $Backend -WindowTitle "CreatorDesk Backend"
 
 # --- 4. Frontend window: npm install (if needed) + npm run dev ---------------
@@ -112,8 +112,8 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  CreatorDesk AI is starting..." -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Backend API : http://localhost:8000"   -ForegroundColor Green
-Write-Host "  Backend docs: http://localhost:8000/docs" -ForegroundColor Green
+Write-Host "  Backend API : http://localhost:8080"   -ForegroundColor Green
+Write-Host "  Backend docs: http://localhost:8080/docs" -ForegroundColor Green
 Write-Host "  Frontend UI : http://localhost:5173"    -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""

@@ -1,16 +1,12 @@
 import logging
-import httpx
-from typing import List
 
-import time
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.core.config import OLLAMA_BASE_URL, OLLAMA_MODEL, RENDERS_DIR, SOURCES_DIR
-from app.database import init_db
 from app.api import routes
-import app.services.llm_service as llm_service
+from app.core.config import RENDERS_DIR, SOURCES_DIR
 
 app = FastAPI(title="CreatorDesk AI", version="1.0.0")
 
@@ -32,8 +28,6 @@ async def log_requests(request: Request, call_next):
 
 # Static file serving for renders and sources
 import os
-
-from app.core.config import RENDERS_DIR
 
 os.makedirs(RENDERS_DIR, exist_ok=True)
 app.mount("/renders", StaticFiles(directory=str(RENDERS_DIR)), name="renders")
@@ -111,5 +105,5 @@ async def proxy_models():
         try:
             response = await client.get("http://127.0.0.1:11434/v1/models")
             return response.json()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - model-proxy failures degrade to an error payload
             return {"error": str(e)}

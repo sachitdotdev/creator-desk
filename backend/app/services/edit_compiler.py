@@ -1,8 +1,89 @@
-import os
+import logging
+import math
 import textwrap
+from pathlib import Path
+
+from app.core.config import AUDIO_SFX_VOLUME
+from app.core.paths import SFX_DIR
+
+log = logging.getLogger(__name__)
 
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
-SFX_DIR = "C:/Projects Openhands/Active/Creator Desk/backend/assets/sfx"
+_SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+# A sane ceiling for an SFX's CLIP-RELATIVE delay: beyond this the LLM output
+# is junk (overflowing floats) and the event is skipped. Absolute source
+# timestamps can legitimately be much larger than this (e.g. a clip cut from
+# hour 2 of a stream), so the ceiling applies after subtracting clip_start.
+MAX_SFX_START_SECONDS = 3600.0
+
+
+def resolve_sfx_path(op: dict) -> str | None:
+    """Resolve an ``sfx`` operation to an existing file under ``paths.SFX_DIR``.
+
+    The operation schema is extended, never replaced: ``file`` and ``name`` are
+    both accepted (``name`` is the bare effect name, ``file`` may carry an
+    extension). Only the final file name is ever honoured: absolute and UNC
+    values are reduced to their basename so a plan can never read a file from
+    outside the SFX folder. Returns ``None`` when the effect cannot be found -
+    callers log a warning and skip the event.
+    """
+    raw = str(op.get("file") or op.get("name") or "").strip()
+    if not raw:
+        return None
+
+    # Normalize Windows separators first so ``Path(...).name`` also yields the
+    # bare file name on POSIX: Path(r"C:\x\boom.mp3").name -> "boom.mp3".
+    # Confine every value to SFX_DIR, whatever form it arrived in.
+    name = Path(raw.replace("\\", "/")).name
+    if not name or name in {".", ".."}:
+        log.warning("[SFX] rejected empty/invalid file name: %r", raw)
+        return None
+    if not name.lower().endswith(_SFX_EXTENSIONS):
+        name = f"{name}.mp3"
+
+    sfx_dir = Path(SFX_DIR)
+    path = sfx_dir / name
+    try:
+        resolved_dir = sfx_dir.resolve()
+        resolved = path.resolve()
+    except OSError:
+        log.warning("[SFX] rejected unresolvable path: %r", raw)
+        return None
+    if resolved_dir != resolved and resolved_dir not in resolved.parents:
+        log.warning("[SFX] rejected path outside SFX_DIR: %r", raw)
+        return None
+    return str(path) if resolved.is_file() else None
+
+# Phase 3.3 - Short hooks: Meissa-generated caption/hook text is truncated to a
+# punchy 3-5 word hook before the edit plan is compiled into the FFmpeg graph.
+HOOK_MAX_WORDS = 5
+_HOOK_FILLER_WORDS = {
+    "um", "uh", "erm", "uhh", "hmm", "like", "literally", "actually",
+    "really", "just", "simply", "sort", "kinda", "well", "so",
+}
+
+
+def truncate_hook_text(text: str, max_words: int = HOOK_MAX_WORDS) -> str:
+    """Post-process LLM hook/caption text into a short, punchy 3-5 word hook.
+
+    Drops filler words, keeps the most meaningful words and caps the result at
+    ``max_words`` (3-5 words for short hooks). Original casing and punctuation
+    are preserved. Returns "" for empty/whitespace-only input.
+    """
+    if not text or not str(text).strip():
+        return ""
+    cleaned = str(text).strip().strip("*").strip("`").strip()
+    if not cleaned:
+        return ""
+    kept_words = []
+    for word in cleaned.split():
+        key = word.strip(".,!?;:'()[]{}*-<>").lower()
+        if not key or key in _HOOK_FILLER_WORDS:
+            continue
+        kept_words.append(word)
+        if len(kept_words) >= max_words:
+            break
+    return " ".join(kept_words).strip()
 
 
 def compile_plan(
@@ -11,7 +92,7 @@ def compile_plan(
     ass_filename: str,
     clip_start_time: float = 0.0,
     sendcmd_path: str = "",
-    template_config: dict = None,
+    template_config: dict | None = None,
 ) -> tuple:
     if template_config is None:
         template_config = {}
@@ -56,9 +137,7 @@ def compile_plan(
             rel_end = max(rel_start + 0.5, op.get("end", 0.0) - clip_start_time)
             
             if op_type == "text":
-                raw_text = op.get("text", "").strip()
-                words = raw_text.split()[:5]
-                text = " ".join(words)
+                text = truncate_hook_text(op.get("text", ""))
                 text = text.replace("'", "").replace(":", "").replace("[", "").replace("]", "").replace(",", "")
                 wrapped_text = "\\n".join(textwrap.wrap(text, width=20))
                 out_label = f"[v{i}]" if i < len(operations) - 1 else "[vout]"
@@ -82,12 +161,45 @@ def compile_plan(
                 current_video = out_label
             
             elif op_type == "sfx":
-                sfx_name = op.get("name", "").lower()
-                sfx_path = f"{SFX_DIR}/{sfx_name}.mp3"
-                if not os.path.exists(sfx_path):
-                    sfx_path = f"{SFX_DIR}/boom.mp3"
-                if os.path.exists(sfx_path):
-                    sfx_files.append({"path": sfx_path, "start": rel_start})
+                sfx_path = resolve_sfx_path(op)
+                if not sfx_path:
+                    # Missing effect files are skipped, never fatal.
+                    log.warning(
+                        "[SFX] skipped: file not found (name=%r file=%r)",
+                        op.get("name"), op.get("file"),
+                    )
+                    continue
+                raw_time = op.get("time_sec")
+                if raw_time is None:
+                    raw_time = op.get("start", rel_start + clip_start_time)
+                try:
+                    event_time = float(str(raw_time).strip().rstrip("s"))
+                    # Non-finite source timestamps are always junk.
+                    if not math.isfinite(event_time):
+                        raise ValueError(f"non-finite time_sec/start: {event_time!r}")
+                    # The ceiling applies to the CLIP-RELATIVE delay, not to the
+                    # absolute source timestamp: a clip cut from hour 2 of a
+                    # stream can legitimately contain an SFX at 7202s that must
+                    # play 2s into the clip. Reject non-finite/over-ceiling
+                    # delays; a negative delay is still clamped to 0 below.
+                    rel_delay = event_time - clip_start_time
+                    if not math.isfinite(rel_delay) or rel_delay > MAX_SFX_START_SECONDS:
+                        raise ValueError(f"out-of-range clip-relative delay: {rel_delay!r}")
+                except (TypeError, ValueError):
+                    log.warning("[SFX] skipped: invalid time_sec/start=%r", raw_time)
+                    continue
+                sfx_files.append({
+                    "path": sfx_path,
+                    "name": op.get("name") or Path(sfx_path).stem,
+                    "start": max(0.0, rel_delay),
+                    "volume": op.get("volume", AUDIO_SFX_VOLUME),
+                })
+                log.info(
+                    "[SFX] %s at %.2fs (clip-relative %.2fs, vol=%s)",
+                    Path(sfx_path).name, event_time,
+                    max(0.0, rel_delay),
+                    op.get("volume", AUDIO_SFX_VOLUME),
+                )
     
     # 3. Burn ASS Captions
     if current_video == "[vstack]":

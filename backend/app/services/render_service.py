@@ -1,38 +1,100 @@
 from __future__ import annotations
+
 from ..core.paths import RENDERS_DIR
+
 """Render service: FFmpeg libx264 9:16 vertical clips with burned ASS captions + template overlay."""
 
 import gc
 import json
+import logging
+import math
 import os
 import subprocess
-import torch
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, ClassVar
 
 from sqlalchemy.orm import Session
 
-from app.models import Clip, Template, Video
-from app.services.whisper_service import (
-    TranscriptSegment,
-    WhisperService,
-)
-from app.services.edit_compiler import compile_plan
-from app.services.audio_compiler import build_audio_filter
-from app.services.face_tracker import generate_sendcmd_file
 from app.core.config import (
-    RENDERS_DIR,
+    AUDIO_DUCK_ATTACK,
+    AUDIO_DUCK_RATIO,
+    AUDIO_DUCK_RELEASE,
+    AUDIO_DUCK_THRESHOLD,
+    AUDIO_MUSIC_VOLUME,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
-    OUTPUT_HEIGHT,
-    OUTPUT_FPS,
-    OUTPUT_CRF,
+    LOUDNESS_NORMALIZE,
+    LOUDNESS_TARGET_I,
+    LOUDNESS_TARGET_LRA,
+    LOUDNESS_TARGET_TP,
 )
 from app.core.processing_utils import (
-    ensure_writable_dir,
     clear_gpu_memory,
+    ensure_writable_dir,
+    run_subprocess,
 )
+from app.models import Clip, Template, Video
+from app.services import music_service
+from app.services.audio_compiler import build_audio_filter
+from app.services.audio_loudness import (
+    apply_loudness_normalization,
+    is_ffmpeg_available,
+)
+from app.services.edit_compiler import compile_plan
+from app.services.face_tracker import generate_sendcmd_file
+
+log = logging.getLogger(__name__)
+
+
+def _coerce_music_volume(value: Any, default: float = AUDIO_MUSIC_VOLUME) -> float:
+    try:
+        volume = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(volume):
+        return default
+    return min(max(volume, 0.0), 1.0)
+
+
+def resolve_bgm_settings(template_config: dict | None) -> tuple[str | None, float, bool]:
+    """Resolve a template's BGM settings to (absolute path, volume, duck).
+
+    ``bgm_track`` is a filename inside MUSIC_DIR. A missing/unknown track is a
+    logged warning and a music-less render, never an exception.
+    """
+    config = template_config if isinstance(template_config, dict) else {}
+    track = config.get("bgm_track") or config.get("background_music")
+    volume = _coerce_music_volume(
+        config.get("bgm_volume", config.get("background_music_volume", AUDIO_MUSIC_VOLUME))
+    )
+    duck = bool(config.get("bgm_duck", config.get("background_music_duck", True)))
+
+    if not track:
+        return None, volume, duck
+
+    track_name = str(track).strip()
+    # Legacy templates stored an absolute path. Accept it only when it points
+    # inside MUSIC_DIR; convert to the basename, which resolve_track then
+    # confines once more. Anything outside MUSIC_DIR stays rejected.
+    legacy = Path(track_name)
+    if legacy.is_absolute():
+        music_dir = Path(music_service.MUSIC_DIR).resolve()
+        try:
+            resolved_legacy = legacy.resolve()
+        except OSError:
+            resolved_legacy = None
+        if resolved_legacy is not None and music_dir in resolved_legacy.parents:
+            track_name = resolved_legacy.name
+
+    resolved = music_service.resolve_track(track_name)
+    if resolved is None:
+        log.warning(
+            "[AUDIO] BGM skipped: track %r not found in %s; rendering without music",
+            track, music_service.MUSIC_DIR,
+        )
+        return None, volume, duck
+    return str(resolved), volume, duck
 
 
 def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
@@ -43,12 +105,12 @@ def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
         g = hex_color[3:5]
         b = hex_color[5:7]
         return f"&H00{b}{g}{r}&"
-    except Exception:
+    except Exception:  # noqa: BLE001 - color fallback is best-effort
         return default
 
 
 class RenderService:
-    VIBE_PROFILES = {
+    VIBE_PROFILES: ClassVar[dict] = {
         "Streamer Hype": {
             "layout": "Split Stack",
             "zoom_intensity": "fast",
@@ -89,14 +151,14 @@ class RenderService:
         """Convert seconds to H:MM:SS.cs format."""
         if s < 0:
             s = 0.0
-        total_cs = int(round(s * 100))
+        total_cs = round(s * 100)
         h = total_cs // 360000
         m = (total_cs % 360000) // 6000
         ssec = (total_cs % 6000) // 100
         cs = total_cs % 100
         return f"{h}:{m:02d}:{ssec:02d}.{cs:02d}"
 
-    def render_clip(self, clip: Clip, video: Video, template: Optional[Template] = None, base_path: Optional[str] = None) -> str:
+    def render_clip(self, clip: Clip, video: Video, template: Template | None = None, base_path: str | None = None) -> str:
         """Render a single vertical clip. Returns output path.
 
         All ffmpeg calls are wrapped with a timeout so a hung or failing
@@ -106,8 +168,13 @@ class RenderService:
 
         # Clear VRAM from previous stages (Whisper/vLLM) before rendering
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            import torch  # heavy, optional dependency: keep the module importable without it
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 - degrade gracefully when torch is unavailable
+            print("DEBUG render_clip: skipping torch VRAM cleanup (torch unavailable)", flush=True)
 
         # Clamp start_time to >= 0 and ensure end_time > start_time
         if clip.start_time < 0:
@@ -146,15 +213,23 @@ class RenderService:
         print(f"DEBUG render_clip: vf={vf}", flush=True)
 
         template_config = template.config if template else {}
-        music_path = template_config.get("background_music") if template_config else None
-        music_volume = (template_config.get("background_music_volume", 0.25) if template_config else 0.25)
-        duck_enabled = (template_config.get("background_music_duck", True) if template_config else True)
+        # Phase 3.6 - bgm_track (filename in MUSIC_DIR) replaces the old
+        # background_music path. Legacy keys still resolve for old templates.
+        music_path, music_volume, duck_enabled = resolve_bgm_settings(template_config)
         audio_filter, extra_audio_inputs = build_audio_filter(
             sfx_events=sfx_files,
             music_path=music_path,
             music_volume=music_volume,
             duck=duck_enabled,
             output_duration=61.0,
+            duck_threshold=AUDIO_DUCK_THRESHOLD,
+            duck_ratio=AUDIO_DUCK_RATIO,
+            duck_attack=AUDIO_DUCK_ATTACK,
+            duck_release=AUDIO_DUCK_RELEASE,
+            # With the two-pass loudness pass enabled below, normalizing in the
+            # filtergraph as well would apply loudnorm twice. Keep the two-pass
+            # pass as the single final loudness stage in that case.
+            inline_loudnorm=not LOUDNESS_NORMALIZE,
         )
         full_filter = f"{vf};{audio_filter}"
 
@@ -174,6 +249,40 @@ class RenderService:
             print(f"DEBUG render_clip: stdout={exc.stdout}", flush=True)
             raise RuntimeError(f"FFmpeg render failed: {exc.stderr or 'no stderr output'}") from exc
 
+        # Phase 3.5 - Optional final loudness normalization (EBU R128 two-pass).
+        # Runs only when the LOUDNESS_NORMALIZE config flag is enabled and FFmpeg
+        # is available; otherwise the render is kept exactly as-is.
+        if LOUDNESS_NORMALIZE and is_ffmpeg_available():
+            normalized_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}_loudnorm.mp4"
+            try:
+                loudness_stats = apply_loudness_normalization(
+                    str(output_path),
+                    str(normalized_path),
+                    target_i=LOUDNESS_TARGET_I,
+                    target_tp=LOUDNESS_TARGET_TP,
+                    target_lra=LOUDNESS_TARGET_LRA,
+                )
+                if loudness_stats is not None:
+                    os.replace(str(normalized_path), str(output_path))
+                    print(
+                        f"DEBUG render_clip: loudnorm applied: input_i={loudness_stats.get('input_i')} "
+                        f"input_tp={loudness_stats.get('input_tp')} input_lra={loudness_stats.get('input_lra')}",
+                        flush=True,
+                    )
+                else:
+                    print("DEBUG render_clip: loudnorm skipped: ffmpeg not available", flush=True)
+            except Exception as exc:  # noqa: BLE001 - loudness failure keeps the un-normalized render
+                # output_path is never reassigned here, so a failed pass leaves
+                # the original, un-normalized render in place.
+                print(f"DEBUG render_clip: loudness normalization failed, keeping un-normalized render: {exc}", flush=True)
+            finally:
+                # The temp file is either already moved or a partial leftover;
+                # best effort removal, never fatal.
+                try:
+                    os.unlink(normalized_path)
+                except OSError:
+                    pass
+
         # Generate a thumbnail (best-effort; failure does not fail the render)
         thumb_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.jpg"
         try:
@@ -190,8 +299,8 @@ class RenderService:
                 timeout=FFMPEG_TIMEOUT_SECONDS,
                 check=True,
             )
-        except Exception:
-            print(f"DEBUG render_clip: thumbnail generation failed", flush=True)
+        except Exception:  # noqa: BLE001 - thumbnail generation is best-effort
+            print("DEBUG render_clip: thumbnail generation failed", flush=True)
             thumb_path = None
 
         clip.output_path = str(output_path)
@@ -206,7 +315,7 @@ class RenderService:
         clear_gpu_memory()
         return str(output_path)
 
-    def _default_config(self) -> Dict[str, Any]:
+    def _default_config(self) -> dict[str, Any]:
         return {
             "caption": {
                 "font": "Arial",
@@ -277,7 +386,7 @@ class RenderService:
 
         ass_path = render_root / f"subs_{clip.id}_{uuid.uuid4().hex[:8]}.ass"
 
-        ass_header = f"""[Script Info]
+        ass_header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -290,8 +399,7 @@ Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-        ass_lines: List[str] = []
-        last_end_time = 0.0
+        ass_lines: list[str] = []
         for seg in overlapping_segments:
             words = seg.get("text", "").strip().replace("\n", " ").split()
             if not words:
@@ -335,8 +443,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"DEBUG: _build_ass wrote {len(ass_lines)} lines to {ass_path}", flush=True)
         return str(ass_path)
 
-    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: Optional[str], template: Optional[Template] = None, layout: str = "split_screen", operations: List = [], start_time: float = 0.0, sendcmd_path: str = "", template_config: dict = None) -> tuple:
+    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None) -> tuple:
         """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
+        if operations is None:
+            operations = []
         clip_start_time = clip.start_time
         ass_filename = os.path.basename(ass_path) if ass_path else ""
 
@@ -370,10 +480,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end: float,
         filter_complex: str,
         output_path: str,
-        ass_path: Optional[str] = None,
-        sfx_files: Optional[List[str]] = None,
-        extra_audio_inputs: Optional[List[str]] = None,
-    ) -> List[str]:
+        ass_path: str | None = None,
+        sfx_files: list[str] | None = None,
+        extra_audio_inputs: list[str] | None = None,
+    ) -> list[str]:
         """Build the ffmpeg command list for rendering a vertical clip."""
         cmd = [
             FFMPEG_PATH, "-y",

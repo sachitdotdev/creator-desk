@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listTemplates,
@@ -6,12 +6,14 @@ import {
   updateTemplate,
   deleteTemplate,
   seedTemplates,
+  listMusic,
+  uploadMusic,
+  musicPreviewUrl,
 } from "@/lib/api";
 import {
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -23,29 +25,25 @@ import {
   SelectTrigger,
   SelectValue,
   Textarea,
-  Separator,
   Switch,
 } from "@/components/ui";
 import {
-  Edit,
   Plus,
   Trash2,
   Copy,
-  Play,
   RefreshCw,
   Save,
-  Palette,
-  Font,
-  Image as ImageIcon,
   Eye,
-  Code,
+  Music,
+  Upload,
+  Volume2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function TemplateEditor() {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TemplateForm>({ name: "", description: "", config: {} as any, is_default: false });
   const [previewConfig, setPreviewConfig] = useState<any>(null);
@@ -92,7 +90,7 @@ export default function TemplateEditor() {
   });
 
   useEffect(() => {
-    setPreviewConfig(templates.find((t) => t.is_default)?.config || templates[0]?.config || null);
+    setPreviewConfig(templates.find((t: any) => t.is_default)?.config || templates[0]?.config || null);
   }, [templates]);
 
   const selectTemplate = (t: any) => {
@@ -150,7 +148,7 @@ export default function TemplateEditor() {
             </div>
           ) : (
             <div className="space-y-2">
-              {templates.map((t) => (
+              {templates.map((t: any) => (
                 <TemplateListItem
                   key={t.id}
                   t={t}
@@ -187,7 +185,7 @@ export default function TemplateEditor() {
                 {/* Controls */}
                 <div className="col-span-1 overflow-y-auto space-y-4">
                   {activeTab === "visual" ? (
-                    <VisualControls config={previewConfig} onChange={setPreviewConfig} />
+                    <VisualControls config={previewConfig} onChange={setPreviewConfig} editingId={editingId} />
                   ) : (
                     <JsonControls config={previewConfig} onChange={setPreviewConfig} />
                   )}
@@ -248,6 +246,8 @@ function defaultConfig() {
     title: { font: "Arial", size: 36, bold: 1, color: "&H00FFFFFF&", position: "top", margin_v: 70, outline_w: 2, glow: false, text: "CREATOR DESK" },
     watermark: { text: "", font: "Arial", size: 22, color: "&H00FFFFFF&", opacity: 0.3, position: "bottom-right", margin_x: 40, margin_y: 40 },
     background: { mode: "blur", blur_amount: 25, color: "#000000" },
+    bgm_track: null,
+    bgm_volume: 0.25,
   };
 }
 
@@ -293,13 +293,13 @@ function TemplateListItem({
 }
 
 // ---------- Tabs ----------
-function TabsControl({ active, onSet }: { active: string; onSet: (v: string) => void }) {
+function TabsControl({ active, onSet }: { active: string; onSet: (v: "visual" | "json") => void }) {
   return (
     <div className="flex gap-1">
       {["visual", "json"].map((k) => (
         <button
           key={k}
-          onClick={() => onSet(k)}
+          onClick={() => onSet(k as "visual" | "json")}
           className={cn("px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
             active === k ? "bg-primary text-primary-foreground" : "border border-input text-muted-foreground hover:bg-accent"
           )}
@@ -332,12 +332,58 @@ function JsonControls({ config, onChange }: { config: any; onChange: (v: any) =>
 }
 
 // ---------- Visual controls ----------
-function VisualControls({ config, onChange }: { config: any; onChange: (v: any) => void }) {
+function VisualControls({ config, onChange, editingId }: { config: any; onChange: (v: any | ((prev: any) => any)) => void; editingId: number | null }) {
   const cap = config.caption || {};
   const title = config.title || {};
   const wm = config.watermark || {};
   const bg = config.background || {};
   const colors = config.colors || {};
+
+  const { data: musicTracks = [], refetch: refetchMusic } = useQuery({
+    queryKey: ["music"],
+    queryFn: () => listMusic(),
+  });
+  const [uploadingMusic, setUploadingMusic] = useState(false);
+  const musicInputRef = useRef<HTMLInputElement>(null);
+  const bgmTrack: string | null = config.bgm_track ?? null;
+  const bgmVolume = typeof config.bgm_volume === "number" ? config.bgm_volume : 0.25;
+
+  // Discard an upload that finishes after this editor switched to another
+  // template (identity change) or unmounted entirely.
+  const aliveRef = useRef(true);
+  const editingIdRef = useRef(editingId);
+  editingIdRef.current = editingId;
+  useEffect(() => {
+    // React.StrictMode mounts, cleans up, then mounts again in development.
+    // Re-arm on every setup so the simulated remount does not leave the ref
+    // permanently false; only a real unmount runs cleanup last.
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+
+  const handleMusicUpload = async (file: File | undefined) => {
+    if (!file) return;
+    const uploadEditingId = editingId; // template identity at upload start
+    setUploadingMusic(true);
+    try {
+      const res = await uploadMusic(file);
+      await refetchMusic();
+      if (!aliveRef.current || editingIdRef.current !== uploadEditingId) return;
+      // Merge into the CURRENT config so a concurrent edit is not clobbered,
+      // and keep whatever bgm_volume is current.
+      onChange((current: any) => ({
+        ...current,
+        bgm_track: res.data.filename,
+        bgm_volume: current.bgm_volume ?? bgmVolume,
+      }));
+      toast.success("Music uploaded");
+    } catch {
+      toast.error("Music upload failed");
+    } finally {
+      if (aliveRef.current) setUploadingMusic(false);
+      if (musicInputRef.current) musicInputRef.current.value = "";
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -388,6 +434,90 @@ function VisualControls({ config, onChange }: { config: any; onChange: (v: any) 
       </div>
 
       <div className="rounded-xl border border-input bg-card p-3">
+        <div className="flex items-center justify-between mb-3">
+          <Label className="text-sm font-medium flex items-center gap-2">
+            <Music className="h-4 w-4" /> Background music
+          </Label>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => musicInputRef.current?.click()}
+            disabled={uploadingMusic}
+          >
+            <Upload className="h-3.5 w-3.5 mr-1.5" />
+            {uploadingMusic ? "Uploading..." : "Upload"}
+          </Button>
+          <input
+            ref={musicInputRef}
+            type="file"
+            accept=".mp3,.wav,.m4a,.ogg,audio/mpeg,audio/wav,audio/mp4,audio/ogg"
+            className="hidden"
+            onChange={(e) => handleMusicUpload(e.target.files?.[0])}
+          />
+        </div>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs">Track</Label>
+            <Select
+              value={bgmTrack ?? "__none__"}
+              onValueChange={(v) => onChange({ ...config, bgm_track: v === "__none__" ? null : v })}
+            >
+              <SelectTrigger className="w-full text-xs">
+                <SelectValue placeholder="None" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">None</SelectItem>
+                {musicTracks.map((t) => (
+                  <SelectItem key={t.filename} value={t.filename}>
+                    {t.title || t.filename}
+                    {t.artist ? ` — ${t.artist}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {musicTracks.length === 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                No tracks yet. Upload a royalty-free or user-owned track.
+              </p>
+            )}
+          </div>
+
+          {bgmTrack && (
+            <audio
+              key={bgmTrack}
+              controls
+              preload="none"
+              src={musicPreviewUrl(bgmTrack)}
+              className="w-full h-9"
+            />
+          )}
+
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs flex items-center gap-1">
+                <Volume2 className="h-3.5 w-3.5" /> Volume
+              </Label>
+              <span className="text-xs text-muted-foreground">{Math.round(bgmVolume * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={bgmVolume}
+              onChange={(e) => onChange({ ...config, bgm_volume: Number(e.target.value) })}
+              className="w-full accent-primary"
+            />
+          </div>
+
+          <p className="text-[11px] text-muted-foreground">
+            Music is ducked under speech at render time. Only add tracks you own or that are royalty-free.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-input bg-card p-3">
         <Label className="text-sm font-medium mb-2 block">Background</Label>
         <SelectRow label="Mode" value={bg.mode || "blur"} items={["blur", "solid", "bars"]} onChange={(v) => setNested("background", "mode", v)} />
         <InputRow label="Blur amount" type="number" value={String(bg.blur_amount || 25)} onChange={(v) => setNested("background", "blur_amount", Number(v) || 25)} />
@@ -413,11 +543,11 @@ function ColorRow({ label, value, onChange }: { label: string; value: string; on
   );
 }
 
-function InputRow({ label, value, type = "text", onChange }: { label: string; value: string; type?: string; onChange: (v: any) => void }) {
+function InputRow({ label, value, type = "text", step, onChange }: { label: string; value: string; type?: string; step?: string; onChange: (v: any) => void }) {
   return (
     <div className="flex flex-col gap-1">
       <Label className="text-xs">{label}</Label>
-      <Input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
+      <Input type={type} step={step} value={value} onChange={(e) => onChange(e.target.value)} className="text-xs" />
     </div>
   );
 }
@@ -485,7 +615,6 @@ function TemplatePreview({ config }: { config: any }) {
     const title = config.title || {};
     const wm = config.watermark || {};
     const bg = config.background || {};
-    const colors = config.colors || {};
 
     // Background
     const bgMode = bg.mode || "blur";

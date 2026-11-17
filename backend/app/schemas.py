@@ -1,7 +1,8 @@
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, field_validator
 import json
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 def _parse_config(v: Any) -> Any:
@@ -19,20 +20,20 @@ class VideoBase(BaseModel):
 
 class VideoCreate(VideoBase):
     path: str
-    duration: Optional[float] = None
-    fps: Optional[float] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
+    duration: float | None = None
+    fps: float | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 class VideoOut(VideoBase):
     id: int
     path: str
-    duration: Optional[float] = None
-    fps: Optional[float] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    transcript_path: Optional[str] = None
+    duration: float | None = None
+    fps: float | None = None
+    width: int | None = None
+    height: int | None = None
+    transcript_path: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -41,8 +42,8 @@ class VideoOut(VideoBase):
 # ---------- Template ----------
 class TemplateBase(BaseModel):
     name: str
-    description: Optional[str] = None
-    config: Dict[str, Any]
+    description: str | None = None
+    config: dict[str, Any]
     is_default: bool = False
 
 
@@ -51,10 +52,10 @@ class TemplateCreate(TemplateBase):
 
 
 class TemplateUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    is_default: Optional[bool] = None
+    name: str | None = None
+    description: str | None = None
+    config: dict[str, Any] | None = None
+    is_default: bool | None = None
 
 
 class TemplateOut(TemplateBase):
@@ -74,40 +75,40 @@ class TemplateOut(TemplateBase):
 class ClipBase(BaseModel):
     start_time: float
     end_time: float
-    title: Optional[str] = None
-    description: Optional[str] = None
-    hashtags: Optional[str] = None
-    hook: Optional[str] = None
-    confidence: Optional[float] = None
-    file_path: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
+    hashtags: str | None = None
+    hook: str | None = None
+    confidence: float | None = None
+    file_path: str | None = None
 
 
 class ClipCreate(ClipBase):
     video_id: int
-    template_id: Optional[int] = None
+    template_id: int | None = None
 
 
 class ClipUpdate(BaseModel):
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    hashtags: Optional[str] = None
-    hook: Optional[str] = None
-    confidence: Optional[float] = None
-    template_id: Optional[int] = None
-    status: Optional[str] = None
+    start_time: float | None = None
+    end_time: float | None = None
+    title: str | None = None
+    description: str | None = None
+    hashtags: str | None = None
+    hook: str | None = None
+    confidence: float | None = None
+    template_id: int | None = None
+    status: str | None = None
 
 
 class ClipOut(ClipBase):
     id: int
     video_id: int
-    template_id: Optional[int] = None
+    template_id: int | None = None
     duration: float
     status: str
-    output_path: Optional[str] = None
-    thumbnail_path: Optional[str] = None
-    error_message: Optional[str] = None
+    output_path: str | None = None
+    thumbnail_path: str | None = None
+    error_message: str | None = None
     progress: float
     created_at: datetime
     updated_at: datetime
@@ -118,9 +119,9 @@ class ClipOut(ClipBase):
 # ---------- Pipeline ----------
 class PipelineStart(BaseModel):
     video_id: int
-    template_id: Optional[int] = None
+    template_id: int | None = None
     num_clips: int = 5
-    vibe: Optional[str] = "Streamer Hype"
+    vibe: str | None = "Streamer Hype"
 
 
 class PipelineStatus(BaseModel):
@@ -128,14 +129,14 @@ class PipelineStatus(BaseModel):
     status: str
     progress: float
     message: str
-    clips: List[ClipOut] = []
+    clips: list[ClipOut] = []
 
 
 # ---------- Schedule ----------
 class ScheduleBase(BaseModel):
     clip_id: int
     platform: str = "tiktok"
-    account_id: Optional[int] = None  # connected social account to post to
+    account_id: int | None = None  # connected social account to post to
     scheduled_at: datetime
 
 
@@ -146,34 +147,34 @@ class ScheduleCreate(ScheduleBase):
 class ScheduleOut(ScheduleBase):
     id: int
     status: str
-    posted_at: Optional[datetime] = None
-    account_id: Optional[int] = None
+    posted_at: datetime | None = None
+    account_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class SchedulePostNow(BaseModel):
-    schedule_ids: Optional[List[int]] = None  # post specific schedules; omit to post all queued
+    schedule_ids: list[int] | None = None  # post specific schedules; omit to post all queued
 
 
 # ---------- Social Accounts ----------
 class SocialAccountBase(BaseModel):
     platform: str  # youtube | tiktok | instagram
     account_name: str
-    channel_id: Optional[str] = None
+    channel_id: str | None = None
     status: str = "connected"  # connected | disconnected | error
 
 
 class SocialAccountConnect(SocialAccountBase):
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
+    access_token: str | None = None
+    refresh_token: str | None = None
 
 
 class SocialAccountOut(BaseModel):
     id: int
     platform: str
     account_name: str
-    channel_id: Optional[str] = None
+    channel_id: str | None = None
     status: str
     connected: bool
     created_at: datetime
@@ -192,11 +193,11 @@ class AccountExport(BaseModel):
 # ---------- Lead finder ----------
 class LeadProcess(BaseModel):
     url: str
-    template_id: Optional[int] = None
+    template_id: int | None = None
 
 
 class LeadProcessOut(BaseModel):
     ok: bool
     message: str
     url: str
-    video_id: Optional[int] = None
+    video_id: int | None = None

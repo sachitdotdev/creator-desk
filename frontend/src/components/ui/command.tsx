@@ -4,8 +4,8 @@ import { Search, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const Command = React.forwardRef<
-  HTMLElement,
-  React.ComponentProps<typeof Cmdk.CommandRoot>
+  React.ElementRef<typeof Cmdk.CommandRoot>,
+  React.ComponentPropsWithoutRef<typeof Cmdk.CommandRoot>
 >(
   ({ className, ...props }, ref) => (
     <Cmdk.CommandRoot
@@ -18,8 +18,8 @@ const Command = React.forwardRef<
 Command.displayName = "Command";
 
 const CommandGroup = React.forwardRef<
-  HTMLElement,
-  React.ComponentProps<typeof Cmdk.CommandGroup>
+  React.ElementRef<typeof Cmdk.CommandGroup>,
+  React.ComponentPropsWithoutRef<typeof Cmdk.CommandGroup>
 >(
   ({ className, ...props }, ref) => (
     <Cmdk.CommandGroup
@@ -32,8 +32,8 @@ const CommandGroup = React.forwardRef<
 CommandGroup.displayName = "CommandGroup";
 
 const CommandInput = React.forwardRef<
-  HTMLElement,
-  React.ComponentProps<typeof Cmdk.CommandInput>
+  React.ElementRef<typeof Cmdk.CommandInput>,
+  React.ComponentPropsWithoutRef<typeof Cmdk.CommandInput>
 >(
   ({ className, ...props }, ref) => (
     <Cmdk.CommandInput
@@ -46,8 +46,8 @@ const CommandInput = React.forwardRef<
 CommandInput.displayName = "CommandInput";
 
 const CommandItem = React.forwardRef<
-  HTMLElement,
-  React.ComponentProps<typeof Cmdk.CommandItem>
+  React.ElementRef<typeof Cmdk.CommandItem>,
+  React.ComponentPropsWithoutRef<typeof Cmdk.CommandItem>
 >(
   ({ className, children, ...props }, ref) => (
     <Cmdk.CommandItem
@@ -65,7 +65,7 @@ const CommandItem = React.forwardRef<
 CommandItem.displayName = "CommandItem";
 
 const CommandItemIndicator = React.forwardRef<
-  HTMLElement,
+  HTMLSpanElement,
   React.HTMLAttributes<HTMLSpanElement>
 >(
   ({ className, ...props }, ref) => (
@@ -82,8 +82,8 @@ const CommandItemIndicator = React.forwardRef<
 CommandItemIndicator.displayName = "CommandItemIndicator";
 
 const CommandList = React.forwardRef<
-  HTMLElement,
-  React.ComponentProps<typeof Cmdk.CommandList>
+  React.ElementRef<typeof Cmdk.CommandList>,
+  React.ComponentPropsWithoutRef<typeof Cmdk.CommandList>
 >(
   ({ className, ...props }, ref) => (
     <Cmdk.CommandList
@@ -96,7 +96,7 @@ const CommandList = React.forwardRef<
 CommandList.displayName = "CommandList";
 
 const CommandSeparator = React.forwardRef<
-  HTMLElement,
+  HTMLHRElement,
   React.HTMLAttributes<HTMLHRElement>
 >(
   ({ className, ...props }, ref) => (
@@ -110,7 +110,7 @@ const CommandSeparator = React.forwardRef<
 CommandSeparator.displayName = "CommandSeparator";
 
 const CommandEmpty2 = React.forwardRef<
-  HTMLElement,
+  HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(
   ({ className, ...props }, ref) => (

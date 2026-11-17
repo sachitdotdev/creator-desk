@@ -1,11 +1,12 @@
-import cv2
-import numpy as np
 import os
 
 from app.core.config import FACE_MODEL
 
+
 def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080) -> bool:
     try:
+        import cv2  # heavy, optional dependency: keep the module importable without it
+
         os.makedirs(os.path.dirname(sendcmd_path), exist_ok=True)
 
         if not os.path.exists(FACE_MODEL):
@@ -90,13 +91,13 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
             f.write("\n".join(final_commands))
 
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - face-tracking failure falls back to a safe overlay
         import traceback
         print(f"DEBUG: Face tracking failed: {type(e).__name__}: {e}")
         traceback.print_exc()
         try:
             with open(sendcmd_path, 'w') as f:
                 f.write("0.000 overlay x -420.0;\n")
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - best-effort fallback overlay
             pass
         return False

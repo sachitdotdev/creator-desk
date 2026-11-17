@@ -1,0 +1,23 @@
+language: en-US
+reviews:
+  profile: chill
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+  path_instructions:
+    - path: "backend/app/services/**"
+      instructions: |
+        Check FFmpeg command construction for shell injection and quoting bugs.
+        Flag anything that touches GPU/VRAM without the single-tenant lock.
+        Flag any blocking calls inside async functions.
+    - path: "backend/app/**"
+      instructions: |
+        All file paths must come from backend/app/core/paths.py. Flag hardcoded paths.
+        New heavy dependencies must be optional with graceful degradation.
+        Audio graph rule: loudnorm runs last and exactly once.
+    - path: "backend/app/api/**"
+      instructions: "Check input validation, path traversal, and error handling on every route."

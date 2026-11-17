@@ -10,8 +10,7 @@ straightforward to wire real TikTok / YouTube / Instagram APIs later
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from app import models
 
@@ -29,7 +28,7 @@ class SocialService:
         if clip.status not in ("rendered", "approved"):
             raise ValueError(f"Clip is not ready to post (status: {clip.status})")
 
-        account: Optional[models.SocialAccount] = None
+        account: models.SocialAccount | None = None
         if schedule.account_id:
             account = (
                 db.query(models.SocialAccount)
@@ -51,7 +50,7 @@ class SocialService:
         post_url = self._publish(account, clip)
 
         schedule.status = "posted"
-        schedule.posted_at = datetime.now(timezone.utc)
+        schedule.posted_at = datetime.now(UTC)
         db.commit()
         db.refresh(schedule)
 
