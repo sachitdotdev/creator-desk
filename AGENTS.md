@@ -31,7 +31,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/models.py`                  — SQLAlchemy models (Video, Clip, Template)
 - `backend/app/schemas.py`                 — Pydantic models
 - `backend/app/services/whisper_service.py`    — faster-whisper transcription
-- `backend/app/services/llm_service.py`        — Ollama client (Meissa / Gemma / Qwen)
+- `backend/app/services/llm_service.py`        — vLLM (OpenAI-compatible) client at http://127.0.0.1:8002/v1, model `meissa-7b-awq`
 - `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder
 - `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook
 - `backend/app/services/face_tracker.py`       — YOLOv8 face detection
@@ -62,6 +62,12 @@ or `ls -R` at the start of a task.** Open only the files you need.
   GET `/{name}/preview`). Audio files are git-ignored; optional `<file>.json` sidecars
   carry title/artist/license. Templates select BGM via `bgm_track` + `bgm_volume`
   (and `bgm_duck`), resolved in `render_service.py`.
+- `services/vllm/`            — self-contained vLLM 0.27.1 on Windows (bundled Python 3.13,
+  no WSL/Docker). `start_vllm.bat` owns the exact command:
+  `launch.bat --model <meissa-7b-awq path> --port 8002 --max-model-len 4096
+  --gpu-memory-utilization 0.60 --max-num-seqs 4 --enforce-eager`. It exposes an
+  OpenAI-compatible `/v1` API and `GET /health`. Called by root `start.bat`; the
+  model path/flags live in that script (gitignored). Model: `C:\Sachit\models\meissa-7b-awq`.
 
 ### Tests & tooling
 - `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates)
@@ -70,7 +76,13 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
 
 ### Host-side scripts (run outside the app)
-- `start.bat`, `start.ps1`  — one-click launchers (venv + backend + frontend; host-absolute paths)
+- `start.bat`               — one-click launcher: health-checks then starts vLLM (8002),
+  backend (8080) and frontend (5173) in minimized windows, in that order. Tunables
+  (ports, health URLs, timeouts, LLM script) are at the top of the file; output goes
+  to `logs\*.log` and PIDs to `.run\*.pid` (both gitignored). `stop.bat` stops only
+  those PIDs. Bootstraps the backend venv when missing.
+- `stop.bat`                — stops the processes recorded in `.run\*.pid` and frees the ports.
+- `start.ps1`               — legacy PowerShell launcher (backend + frontend only).
 - `Start-OpenHands.bat`     — host launcher for the OpenHands Docker/WSL environment (not the app)
 - `script.py`, `backend/quantize_meissa.py`, `backend/update_music.py` (stub),
   `backend/fix_paths.py` (one-off DB path migration), `backend/init_db_script.py`,
@@ -98,11 +110,18 @@ or `ls -R` at the start of a task.** Open only the files you need.
 
 # Setup & Run Commands
 
+- **One-click:** run `start.bat` from the repo root. It starts, in order:
+  vLLM (`services\vllm\start_vllm.bat`, `http://127.0.0.1:8002/v1`, model
+  `meissa-7b-awq`; health `GET /health`), the backend (8080, health
+  `/api/status`), and the frontend (5173), then opens the browser. Each service
+  is skipped if its health endpoint already answers. Polls every 3s; the LLM
+  timeout defaults to 300s (model load is slow) and is tunable at the top of the
+  script. On LLM timeout it prints the service name and log path and exits
+  before starting the backend. Run `stop.bat` to stop only what it started.
 - **Backend:** from `backend/`, activate the venv and run
   `python -m uvicorn app.main:app --reload --port 8080` → `http://localhost:8080`
-  (`start.bat` creates the venv with Python 3.12/3.11, installs
-  `requirements.txt`, and starts both apps). `start.ps1` and the Vite proxy
-  also use port 8080.
+  (`start.bat` bootstraps the venv with Python 3.12/3.11 when missing).
+  `start.ps1` and the Vite proxy also use port 8080.
 - **Frontend:** `cd frontend && npm run dev` (Vite on `http://localhost:5173`).
   `npm run build` = `tsc && vite build`.
 - **Tests:** from `backend/`, `python -m pytest tests -q` and `ruff check .`.
