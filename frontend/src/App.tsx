@@ -42,7 +42,7 @@ export default function App() {
           <WifiOff className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
           <h2 className="text-lg font-medium">Cannot reach API</h2>
           <p className="text-muted-foreground mt-2">
-            Make sure the backend is running on localhost:8000.
+            Make sure the backend is running on localhost:8080.
           </p>
           <Button onClick={() => window.location.reload()} className="mt-4">
             Retry
