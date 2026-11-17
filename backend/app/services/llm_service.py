@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import traceback
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -21,12 +21,17 @@ class TextOperation(BaseModel):
     end: float
     text: str
 
+class SFXOperation(BaseModel):
+    type: str = Field(default="sfx")
+    start: float
+    name: str
+
 class Clip(BaseModel):
     clip_id: int
     start: float
     end: float
     layout: str = Field(default="center_crop")
-    operations: List[TextOperation]
+    operations: List[Union[TextOperation, SFXOperation]]
 
 class ClipsResponse(BaseModel):
     clips: List[Clip]

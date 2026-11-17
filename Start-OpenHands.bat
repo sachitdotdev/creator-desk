@@ -11,7 +11,8 @@ if "%ERRORLEVEL%"=="1" (
 
 :: 2. Start the Linux Backend silently via WSL
 echo Starting Ubuntu backend...
-wsl -d Ubuntu -e bash -c "cd '/mnt/c/Sachit/Creator Desk' && docker compose up -d"
+:: UPDATED PATH to the new location
+wsl -d Ubuntu -e bash -c "cd '/mnt/c/Projects Openhands/Active/Creator Desk' && docker compose up -d"
 
 :: 3. Wait 5 seconds for the web server to initialize
 timeout /t 5 /nobreak >nul

@@ -1,5 +1,6 @@
-"""Render service: FFmpeg libx264 9:16 vertical clips with burned ASS captions + template overlay."""
 from __future__ import annotations
+from ..core.paths import RENDERS_DIR
+"""Render service: FFmpeg libx264 9:16 vertical clips with burned ASS captions + template overlay."""
 
 import gc
 import json
@@ -48,37 +49,37 @@ def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
 
 class RenderService:
     VIBE_PROFILES = {
-    "Streamer Hype": {
-        "layout": "Split Stack",
-        "zoom_intensity": "fast",
-        "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
-        "pacing": "fast",
-    },
-    "Rapper Energy": {
-        "layout": "PiP B-roll",
-        "zoom_intensity": "high",
-        "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
-        "pacing": "beat-synced",
-    },
-    "Technical": {
-        "layout": "Focus Frame",
-        "zoom_intensity": "none",
-        "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": False, "kinetic": False},
-        "pacing": "strict",
-    },
-    "Horror": {
-        "layout": "Letterbox",
-        "zoom_intensity": "slow",
-        "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
-        "pacing": "slow",
-    },
-    "Narrative": {
-        "layout": "Cinema Bar",
-        "zoom_intensity": "soft",
-        "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
-        "pacing": "documentary",
-    },
-}
+        "Streamer Hype": {
+            "layout": "Split Stack",
+            "zoom_intensity": "fast",
+            "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
+            "pacing": "fast",
+        },
+        "Rapper Energy": {
+            "layout": "PiP B-roll",
+            "zoom_intensity": "high",
+            "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
+            "pacing": "beat-synced",
+        },
+        "Technical": {
+            "layout": "Focus Frame",
+            "zoom_intensity": "none",
+            "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": False, "kinetic": False},
+            "pacing": "strict",
+        },
+        "Horror": {
+            "layout": "Letterbox",
+            "zoom_intensity": "slow",
+            "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
+            "pacing": "slow",
+        },
+        "Narrative": {
+            "layout": "Cinema Bar",
+            "zoom_intensity": "soft",
+            "caption_style": {"font": "Arial", "size": 48, "bold": 1, "primary": "white", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": True, "kinetic": True},
+            "pacing": "documentary",
+        },
+    }
 
     def __init__(self, db: Session):
         self.db = db
@@ -95,10 +96,9 @@ class RenderService:
         cs = total_cs % 100
         return f"{h}:{m:02d}:{ssec:02d}.{cs:02d}"
 
-    # ------------------------------------------------------------------ public
     def render_clip(self, clip: Clip, video: Video, template: Optional[Template] = None, base_path: Optional[str] = None) -> str:
         """Render a single vertical clip. Returns output path.
-        
+
         All ffmpeg calls are wrapped with a timeout so a hung or failing
         encode cannot stall or crash a long-running batch job. The output
         directory is verified writable before any work begins.
@@ -108,35 +108,35 @@ class RenderService:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
+
         # Clamp start_time to >= 0 and ensure end_time > start_time
         if clip.start_time < 0:
             clip.start_time = 0.0
         if clip.end_time <= clip.start_time:
             clip.end_time = clip.start_time + 5.0
-        
+
         render_root = Path(base_path) if base_path else RENDERS_DIR
         ensure_writable_dir(render_root)
         print(f"DEBUG render_clip: clip_id={clip.id}", flush=True)
-        
+
         output_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.mp4"
-        
+
         # 1. Build ASS subtitles from transcript if available
         print("DEBUG render_clip: Starting _build_ass", flush=True)
-        
+
         # Debug: Check if transcript exists
         transcript_path = video.transcript_path
         print(f"DEBUG render_clip: video.transcript_path = {transcript_path}", flush=True)
         print(f"DEBUG render_clip: transcript exists = {Path(transcript_path).exists() if transcript_path else 'NOT SET'}", flush=True)
-        
+
         ass_path = self._build_ass(clip, video, template, render_root)
         print(f"DEBUG render_clip: ass_path (returned from _build_ass) = {ass_path}", flush=True)
-        
+
         # 2. Build the ffmpeg filter graph using the edit plan from the clip
         print("DEBUG render_clip: Starting _build_filter_graph", flush=True)
         print(f"DEBUG render_clip: clip.layout = {clip.layout}, clip.operations = {clip.operations}", flush=True)
 
-        sendcmd_path = f"C:/Sachit/Creator Desk/data/renders/crop_{clip.id}.txt"
+        sendcmd_path = str(RENDERS_DIR / f"crop_{clip.id}.txt")
         sendcmd_filename = f"crop_{clip.id}.txt"
         generate_sendcmd_file(video.path, clip.start_time, clip.end_time - clip.start_time, sendcmd_path)
 
@@ -144,7 +144,7 @@ class RenderService:
             video, clip, ass_path, template, clip.layout, clip.operations, clip.start_time, sendcmd_filename, template_config=template.config if template else {}
         )
         print(f"DEBUG render_clip: vf={vf}", flush=True)
-        
+
         template_config = template.config if template else {}
         music_path = template_config.get("background_music") if template_config else None
         music_volume = (template_config.get("background_music_volume", 0.25) if template_config else 0.25)
@@ -173,7 +173,7 @@ class RenderService:
             print(f"DEBUG render_clip: stderr={exc.stderr}", flush=True)
             print(f"DEBUG render_clip: stdout={exc.stdout}", flush=True)
             raise RuntimeError(f"FFmpeg render failed: {exc.stderr or 'no stderr output'}") from exc
-        
+
         # Generate a thumbnail (best-effort; failure does not fail the render)
         thumb_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.jpg"
         try:
@@ -193,20 +193,19 @@ class RenderService:
         except Exception:
             print(f"DEBUG render_clip: thumbnail generation failed", flush=True)
             thumb_path = None
-        
+
         clip.output_path = str(output_path)
         clip.thumbnail_path = str(thumb_path) if thumb_path else None
         clip.status = "rendered"
         clip.progress = 100.0
         self.db.commit()
         print(f"DEBUG render_clip: done, output={output_path}", flush=True)
-        
+
         # Release GPU/accelerator memory after each render so long batch
         # sessions do not leak NVENC/CUDA buffers.
         clear_gpu_memory()
         return str(output_path)
 
-    # ---------------------------------------------------------------- internals
     def _default_config(self) -> Dict[str, Any]:
         return {
             "caption": {
@@ -253,26 +252,26 @@ class RenderService:
     def _build_ass(self, clip, video, template, render_root):
         """Create an ASS file containing only the subtitles within the clip window."""
         print(f"DEBUG _build_ass: clip.start_time={clip.start_time}, clip.end_time={clip.end_time}", flush=True)
-        
+
         transcript_path = video.transcript_path
         if not transcript_path or not os.path.exists(transcript_path):
             print(f"DEBUG: _build_ass transcript not found at {transcript_path}", flush=True)
             return None
-        
+
         transcript = json.loads(Path(transcript_path).read_text())
         if isinstance(transcript, dict):
             transcript = transcript.get("segments", [])
-        
+
         data = transcript
         if not data:
             return None
 
         # Strict overlap filtering
         overlapping_segments = [s for s in data if s["end"] >= clip.start_time and s["start"] <= clip.end_time]
-        
+
         # Sort to prevent out-of-order captions
         overlapping_segments = sorted(overlapping_segments, key=lambda x: x.get("start", 0))
-        
+
         if not overlapping_segments:
             return None
 
@@ -297,32 +296,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             words = seg.get("text", "").strip().replace("\n", " ").split()
             if not words:
                 continue
-            
+
             chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
             total_words = len(words)
-            
+
             raw_start = max(0.0, float(seg.get("start", 0)) - float(clip.start_time))
             raw_end = min(float(clip.end_time) - float(clip.start_time), float(seg.get("end", 0)) - float(clip.start_time))
-            
+
             # Strictly use the original timestamps to prevent any lag
             seg_start = raw_start
             seg_end = raw_end
-            
+
             if seg_start >= seg_end:
                 continue
-                
+
             total_duration = seg_end - seg_start
             current_time = seg_start
-            
+
             for chunk in chunks:
                 chunk_text = " ".join(chunk)
-                
+
                 # Calculate exact proportional time for this chunk
                 chunk_duration = total_duration * (len(chunk) / total_words)
-                
+
                 # Force the chunk to end exactly at the segment end
                 chunk_end = min(seg_end, current_time + chunk_duration)
-                
+
                 start_str = self._format_time(current_time)
                 end_str = self._format_time(chunk_end)
                 ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{chunk_text}")
@@ -337,11 +336,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return str(ass_path)
 
     def _build_filter_graph(self, video: Video, clip: Clip, ass_path: Optional[str], template: Optional[Template] = None, layout: str = "split_screen", operations: List = [], start_time: float = 0.0, sendcmd_path: str = "", template_config: dict = None) -> tuple:
-        """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler.
-        
-        start_time normalizes absolute timestamps to relative clip timestamps
-        so burn-in text and SFX appear at the correct time within the clip.
-        """
+        """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
         clip_start_time = clip.start_time
         ass_filename = os.path.basename(ass_path) if ass_path else ""
 
@@ -385,12 +380,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             "-hide_banner", "-loglevel", "warning",
             "-ss", str(start),
             "-i", input_path,
-            *(["-i", path] for path in (extra_audio_inputs or [])),
+        ]
+
+        # ADD AUDIO INPUTS CORRECTLY HERE
+        for path in (extra_audio_inputs or []):
+            cmd.extend(["-i", path])
+
+        cmd.extend([
             "-t", str(end - start),
             "-filter_complex", filter_complex,
             "-map", "[out_final]",
             "-map", "[aout]",
-            "-c:v", "h264_nvenc", "-preset", "p4",
+            "-c:v", "libx264", "-preset", "slow",
             "-b:v", "5M",
             "-maxrate", "10M",
             "-bufsize", "10M",
@@ -399,7 +400,5 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             str(output_path),
-        ]
+        ])
         return cmd
-
-    

@@ -2,7 +2,7 @@ import os
 import textwrap
 
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
-SFX_DIR = "C:/Sachit/Creator Desk/backend/assets/sfx"
+SFX_DIR = "C:/Projects Openhands/Active/Creator Desk/backend/assets/sfx"
 
 
 def compile_plan(

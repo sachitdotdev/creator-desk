@@ -31,22 +31,27 @@ if not os.environ.get("FFMPEG_PATH") and not shutil.which("ffmpeg"):
             os.environ["PATH"] = str(_c.parent) + os.pathsep + os.environ.get("PATH", "")
             break
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = BASE_DIR / "data"
-SOURCES_DIR = DATA_DIR / "sources"
-RENDERS_DIR = DATA_DIR / "renders"
-TRANSCRIPTS_DIR = DATA_DIR / "creators"
-TEMPLATES_DIR = DATA_DIR / "templates"
-DB_PATH = DATA_DIR / "creatordesk.db"
+# Import paths from core.paths
+from app.core.paths import (
+    DATA_DIR,
+    SOURCES_DIR,
+    RENDERS_DIR,
+    TRANSCRIPTS_DIR,
+    TEMPLATES_DIR,
+    DB_PATH,
+    MUSIC_DIR,
+    SFX_DIR,
+    MODELS_DIR,
+    FACE_MODEL,
+    PROCESSED_DIR,
+)
 
 # Ensure directories exist
-for d in [DATA_DIR, SOURCES_DIR, RENDERS_DIR, TRANSCRIPTS_DIR, TEMPLATES_DIR]:
+for d in [DATA_DIR, SOURCES_DIR, RENDERS_DIR, TRANSCRIPTS_DIR, TEMPLATES_DIR, MUSIC_DIR, SFX_DIR, MODELS_DIR, PROCESSED_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # Ollama
 _ollama_host = os.getenv("OLLAMA_HOST", "127.0.0.1:11434")
-# Always normalize to an explicit base URL with a scheme
-# (http://localhost:11434; use .../11434/v1 for OpenAI-compatible clients).
 if not _ollama_host.startswith(("http://", "https://")):
     _ollama_host = "http://" + _ollama_host
 OLLAMA_HOST = _ollama_host.rstrip("/")
@@ -54,8 +59,6 @@ OLLAMA_HOST = OLLAMA_HOST.replace("0.0.0.0", "127.0.0.1")
 OLLAMA_BASE_URL = OLLAMA_HOST
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen14b-awq")
 
-# Runtime-resolved active model. Auto-detected at startup from GET /api/tags;
-# falls back to OLLAMA_MODEL when Ollama is unreachable or has no models.
 OLLAMA_ACTIVE_MODEL: Optional[str] = None
 
 # Whisper
@@ -75,8 +78,8 @@ OUTPUT_FPS = int(os.getenv("OUTPUT_FPS", "30"))
 OUTPUT_CRF = int(os.getenv("OUTPUT_CRF", "24"))
 
 # Batch (drop-folder) processing
-BATCH_INPUT_DIR = DATA_DIR / "sources"      # drop raw videos here
-BATCH_DONE_DIR = DATA_DIR / "sources" / "processed"  # successfully processed videos move here
+BATCH_INPUT_DIR = SOURCES_DIR      # drop raw videos here
+BATCH_DONE_DIR = PROCESSED_DIR     # successfully processed videos move here
 BATCH_NUM_CLIPS = int(os.getenv("BATCH_NUM_CLIPS", "5"))
 BATCH_VIBE = os.getenv("BATCH_VIBE", "Streamer Hype")
 
@@ -88,4 +91,4 @@ DATABASE_URL = f"sqlite:///{DB_PATH}"
 # Debug prints to verify paths
 print(f"DEBUG CONFIG: DATA_DIR={DATA_DIR}")
 print(f"DEBUG CONFIG: SOURCES_DIR={SOURCES_DIR}")
-print(f"DEBUG CONFIG: TRANSCRIPTS_DIR=DATA_DIR/creators (calculated)")
+print(f"DEBUG CONFIG: TRANSCRIPTS_DIR={TRANSCRIPTS_DIR}")
