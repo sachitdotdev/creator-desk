@@ -1,6 +1,25 @@
 """Phase 3.3 - Short hooks: unit tests for hook/caption text post-processing."""
 
-from app.services.edit_compiler import compile_plan, truncate_hook_text
+import logging
+
+from app.services import edit_compiler
+from app.services.edit_compiler import (
+    MAX_SFX_START_SECONDS,
+    compile_plan,
+    truncate_hook_text,
+)
+
+
+def _sfx_plan(operations, monkeypatch, tmp_path, clip_start_time):
+    monkeypatch.setattr(edit_compiler, "SFX_DIR", tmp_path)
+    (tmp_path / "boom.mp3").write_bytes(b"\x00")
+    return compile_plan(
+        operations=operations,
+        layout="center_crop",
+        ass_filename="subs.ass",
+        clip_start_time=clip_start_time,
+        sendcmd_path="crop.txt",
+    )
 
 
 def test_truncate_hook_short_text_unchanged():
@@ -75,3 +94,26 @@ def test_compile_plan_keeps_short_hook_text():
         sendcmd_path="/tmp/crop.txt",
     )
     assert "THE TRUTH" in vf
+
+
+def test_sfx_late_source_timestamp_uses_clip_relative_delay(monkeypatch, tmp_path):
+    # Clip cut from hour 2 of a stream: SFX at 7202s must play 2s into the clip.
+    _, sfx_files = _sfx_plan(
+        [{"type": "sfx", "name": "boom", "time_sec": 7202}],
+        monkeypatch, tmp_path, clip_start_time=7200.0,
+    )
+
+    assert len(sfx_files) == 1
+    assert sfx_files[0]["start"] == 2.0
+
+
+def test_sfx_relative_delay_above_ceiling_is_skipped(monkeypatch, tmp_path, caplog):
+    relative = MAX_SFX_START_SECONDS + 10
+    with caplog.at_level(logging.WARNING, logger="app.services.edit_compiler"):
+        _, sfx_files = _sfx_plan(
+            [{"type": "sfx", "name": "boom", "time_sec": relative}],
+            monkeypatch, tmp_path, clip_start_time=0.0,
+        )
+
+    assert sfx_files == []
+    assert "skipped" in caplog.text

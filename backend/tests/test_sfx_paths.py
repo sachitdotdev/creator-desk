@@ -70,6 +70,19 @@ def test_parent_traversal_resolves_inside_sfx_dir(monkeypatch, tmp_path):
     assert sfx_files[0]["path"] == expected
 
 
+def test_backslash_separated_path_resolves_under_sfx_dir(monkeypatch, tmp_path):
+    # Backslashes are normalized to "/" before taking the basename, so this
+    # resolves to "boom.mp3" under SFX_DIR on POSIX as well as on Windows.
+    expected = _make_file(tmp_path / "boom.mp3")
+
+    _, sfx_files = _plan(
+        [{"type": "sfx", "file": r"C:\x\boom.mp3", "start": 1.0}],
+        monkeypatch, tmp_path,
+    )
+
+    assert sfx_files[0]["path"] == expected
+
+
 def test_resolve_sfx_path_rejects_empty_names(monkeypatch, tmp_path):
     monkeypatch.setattr(edit_compiler, "SFX_DIR", tmp_path)
 

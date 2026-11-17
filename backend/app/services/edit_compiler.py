@@ -10,8 +10,10 @@ log = logging.getLogger(__name__)
 
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
 _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
-# A sane ceiling for an SFX timestamp: beyond this the LLM output is junk
-# (non-finite or overflowing floats) and the event is skipped.
+# A sane ceiling for an SFX's CLIP-RELATIVE delay: beyond this the LLM output
+# is junk (overflowing floats) and the event is skipped. Absolute source
+# timestamps can legitimately be much larger than this (e.g. a clip cut from
+# hour 2 of a stream), so the ceiling applies after subtracting clip_start.
 MAX_SFX_START_SECONDS = 3600.0
 
 
@@ -29,8 +31,10 @@ def resolve_sfx_path(op: dict) -> str | None:
     if not raw:
         return None
 
+    # Normalize Windows separators first so ``Path(...).name`` also yields the
+    # bare file name on POSIX: Path(r"C:\x\boom.mp3").name -> "boom.mp3".
     # Confine every value to SFX_DIR, whatever form it arrived in.
-    name = Path(raw).name
+    name = Path(raw.replace("\\", "/")).name
     if not name or name in {".", ".."}:
         log.warning("[SFX] rejected empty/invalid file name: %r", raw)
         return None
@@ -170,21 +174,30 @@ def compile_plan(
                     raw_time = op.get("start", rel_start + clip_start_time)
                 try:
                     event_time = float(str(raw_time).strip().rstrip("s"))
-                    if not math.isfinite(event_time) or event_time > MAX_SFX_START_SECONDS:
-                        raise ValueError(f"out-of-range time_sec/start: {event_time!r}")
+                    # Non-finite source timestamps are always junk.
+                    if not math.isfinite(event_time):
+                        raise ValueError(f"non-finite time_sec/start: {event_time!r}")
+                    # The ceiling applies to the CLIP-RELATIVE delay, not to the
+                    # absolute source timestamp: a clip cut from hour 2 of a
+                    # stream can legitimately contain an SFX at 7202s that must
+                    # play 2s into the clip. Reject non-finite/over-ceiling
+                    # delays; a negative delay is still clamped to 0 below.
+                    rel_delay = event_time - clip_start_time
+                    if not math.isfinite(rel_delay) or rel_delay > MAX_SFX_START_SECONDS:
+                        raise ValueError(f"out-of-range clip-relative delay: {rel_delay!r}")
                 except (TypeError, ValueError):
                     log.warning("[SFX] skipped: invalid time_sec/start=%r", raw_time)
                     continue
                 sfx_files.append({
                     "path": sfx_path,
                     "name": op.get("name") or Path(sfx_path).stem,
-                    "start": max(0.0, event_time - clip_start_time),
+                    "start": max(0.0, rel_delay),
                     "volume": op.get("volume", AUDIO_SFX_VOLUME),
                 })
                 log.info(
                     "[SFX] %s at %.2fs (clip-relative %.2fs, vol=%s)",
                     Path(sfx_path).name, event_time,
-                    max(0.0, event_time - clip_start_time),
+                    max(0.0, rel_delay),
                     op.get("volume", AUDIO_SFX_VOLUME),
                 )
     

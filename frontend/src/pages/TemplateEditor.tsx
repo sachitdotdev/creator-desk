@@ -353,7 +353,13 @@ function VisualControls({ config, onChange, editingId }: { config: any; onChange
   const aliveRef = useRef(true);
   const editingIdRef = useRef(editingId);
   editingIdRef.current = editingId;
-  useEffect(() => () => { aliveRef.current = false; }, []);
+  useEffect(() => {
+    // React.StrictMode mounts, cleans up, then mounts again in development.
+    // Re-arm on every setup so the simulated remount does not leave the ref
+    // permanently false; only a real unmount runs cleanup last.
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
 
   const handleMusicUpload = async (file: File | undefined) => {
     if (!file) return;
