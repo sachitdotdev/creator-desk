@@ -22,7 +22,9 @@ from app.core.processing_utils import run_subprocess
 
 # EBU R128 / ITU-R BS.1770 loudness targets for short-form vertical clips.
 LOUDNESS_TARGET_I = -14.0
-LOUDNESS_TARGET_TP = -1.5
+# AAC encoding can overshoot true peak by ~0.4-0.5 dB, so leave headroom for
+# the final delivery ceiling of -1.5 dBTP.
+LOUDNESS_TARGET_TP = -2.0
 LOUDNESS_TARGET_LRA = 11.0
 
 
@@ -40,7 +42,13 @@ def is_ffmpeg_available(ffmpeg_path: str | None = None) -> bool:
     )
 
 
-def measure_loudness(input_path: str, ffmpeg_path: str | None = None) -> dict:
+def measure_loudness(
+    input_path: str,
+    ffmpeg_path: str | None = None,
+    target_i: float = LOUDNESS_TARGET_I,
+    target_tp: float = LOUDNESS_TARGET_TP,
+    target_lra: float = LOUDNESS_TARGET_LRA,
+) -> dict:
     """Pass 1: measure loudness (I / TP / LRA) via loudnorm with print_format=json.
 
     Returns a dict of measured (input_*) and predicted (output_*) loudness stats.
@@ -52,8 +60,8 @@ def measure_loudness(input_path: str, ffmpeg_path: str | None = None) -> dict:
         "-nostats",
         "-i", str(input_path),
         "-af", (
-            f"loudnorm=I={float(LOUDNESS_TARGET_I):g}:TP={float(LOUDNESS_TARGET_TP):g}:"
-            f"LRA={float(LOUDNESS_TARGET_LRA):g}:print_format=json"
+            f"loudnorm=I={float(target_i):g}:TP={float(target_tp):g}:"
+            f"LRA={float(target_lra):g}:print_format=json"
         ),
         "-f", "null", "-",
     ]
@@ -95,7 +103,10 @@ def apply_loudness_normalization(
     if not is_ffmpeg_available(ffmpeg_path):
         return None
     ffmpeg = str(ffmpeg_path or os.environ.get("FFMPEG_PATH") or "ffmpeg")
-    stats = measure_loudness(input_path, ffmpeg_path=ffmpeg)
+    stats = measure_loudness(
+        input_path, ffmpeg_path=ffmpeg,
+        target_i=target_i, target_tp=target_tp, target_lra=target_lra,
+    )
     out = Path(output_path) if output_path else Path(f"{input_path!s}_loudnorm.mp4")
     flt = (
         f"loudnorm=I={float(target_i):g}:TP={float(target_tp):g}:LRA={float(target_lra):g}"
