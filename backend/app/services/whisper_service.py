@@ -7,8 +7,6 @@ import pathlib
 import subprocess
 import sys
 
-import torch
-
 
 def _register_nvidia_dll_paths() -> None:
     """Prepend nvidia pip-package DLL dirs to PATH for ctranslate2 (Windows only)."""
@@ -28,8 +26,10 @@ def _register_nvidia_dll_paths() -> None:
 
 _register_nvidia_dll_paths()
 
-import whisperx
-from faster_whisper import BatchedInferencePipeline
+# NOTE: torch, whisperx and faster_whisper are imported lazily inside the
+# methods that need them. They are multi-GB optional dependencies, and keeping
+# this module importable without them lets the API boot (and the test suite
+# run) on machines without CUDA/torch.
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class WhisperService:
         if self._model is not None:
             return self._model
         try:
-            from faster_whisper import WhisperModel
+            from faster_whisper import BatchedInferencePipeline, WhisperModel
         except ImportError as exc:
             raise RuntimeError(f"Failed to import faster_whisper: {exc}") from exc
 
@@ -245,6 +245,10 @@ class WhisperService:
         print(f"DEBUG: [transcribe] Chunking audio file: {audio_path}")
 
         import tempfile
+
+        import torch
+        import whisperx
+        from faster_whisper import BatchedInferencePipeline
 
         # Create a temporary directory for chunks
         temp_dir = tempfile.mkdtemp()

@@ -14,7 +14,6 @@ import uuid
 from pathlib import Path
 from typing import Any, ClassVar
 
-import torch
 from sqlalchemy.orm import Session
 
 from app.core.config import (
@@ -155,8 +154,13 @@ class RenderService:
 
         # Clear VRAM from previous stages (Whisper/vLLM) before rendering
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            import torch  # heavy, optional dependency: keep the module importable without it
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 - degrade gracefully when torch is unavailable
+            print("DEBUG render_clip: skipping torch VRAM cleanup (torch unavailable)", flush=True)
 
         # Clamp start_time to >= 0 and ensure end_time > start_time
         if clip.start_time < 0:

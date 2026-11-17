@@ -1,12 +1,12 @@
 import os
 
-import cv2
-
 from app.core.config import FACE_MODEL
 
 
 def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080) -> bool:
     try:
+        import cv2  # heavy, optional dependency: keep the module importable without it
+
         os.makedirs(os.path.dirname(sendcmd_path), exist_ok=True)
 
         if not os.path.exists(FACE_MODEL):
