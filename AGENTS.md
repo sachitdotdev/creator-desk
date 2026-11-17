@@ -10,15 +10,69 @@ It takes raw uploaded videos, transcribes them via Faster-Whisper, uses a local 
 - **Video Processing:** FFmpeg (via `subprocess`).
 
 
-# Directory Structure
-- `/backend/app/api/`: FastAPI routers (`routes.py`).
-- `/backend/app/services/`: Core business logic (`whisper_service.py`, `llm_service.py`, `render_service.py`).
-- `/backend/app/models.py`: SQLAlchemy database models (Video, Clip, Template).
-- `/backend/app/database.py`: DB connection and `SessionLocal` setup.
-- `/frontend/src/pages/`: React views (`UploadStudio.tsx`, `ClipReview.tsx`).
-- `/frontend/src/components/`: Reusable UI components.
-- `/frontend/src/lib/api.ts`: Centralized fetch calls to the backend.
-- `/.openhands/microagents/`: Specialized skill files (React, FastAPI, FFmpeg, Ollama, Debugging).
+## Project Map — read this before exploring
+
+The layout below is authoritative. **Do not run `tree`, `find`, `rg --files`,
+or `ls -R` at the start of a task.** Open only the files you need.
+
+### Backend (Python / FastAPI)
+- `backend/app/main.py`                    — FastAPI app entry
+- `backend/app/api/routes.py`              — HTTP routes; .wav globbing for processed sources
+- `backend/app/core/config.py`             — settings + ffmpeg binary resolution
+- `backend/app/core/paths.py`              — (planned — paths centralization task; not yet created)
+- `backend/app/database.py`                — DB session, schema bootstrap
+- `backend/app/models.py`                  — SQLAlchemy models (Video, Clip, Template)
+- `backend/app/services/whisper_service.py`    — faster-whisper transcription
+- `backend/app/services/llm_service.py`        — Ollama client (Meissa / Gemma / Qwen)
+- `backend/app/services/edit_compiler.py`      — compile_plan(); FFmpeg filtergraph builder
+- `backend/app/services/render_service.py`     — sendcmd / crop render writes
+- `backend/app/services/face_tracker.py`       — YOLOv8 face detection
+- `backend/app/services/audio_compiler.py`     — Phase 3 audio stages (SFX, ducking)
+      (planned: `audio_stems.py`, `audio_loudness.py`)
+- `backend/app/services/social_service.py`     — export/distribution stubs
+- `backend/app/services/batch_service.py`      — Automated batch video processing
+- `backend/app/services/lead_finder.py`        — YouTube Shorts candidate discovery
+- `backend/app/services/qc_bot.py`             — Rendered clip quality auditing
+- `backend/app/services/template_service.py`   — Template management and defaults
+- `backend/app/core/processing_utils.py`       — Robust media processing utilities
+- `backend/app/schemas.py`                     — Pydantic models for video and clip data
+
+### Frontend (React / Vite / TypeScript)
+- `frontend/src/pages/*.tsx`       — UploadStudio, ClipReview, Scheduler, TemplateEditor, Accounts
+- `frontend/src/components/**`     — shared UI
+- `frontend/src/lib/api.ts`        — ALL fetch() calls live here
+- `frontend/src/lib/utils.ts`      — shared helpers
+
+### Data, models, assets
+- `data/`                    — runtime DBs, renders, sources, creators, templates (resolve via `paths.py`)
+- `data/sources/processed/`  — processed .wav files (was incorrectly documented as backend/data/...)
+- `backend/assets/`          — music, sfx, fonts, models/, yolov8n-face.pt
+- `backend/assets/models/`   — LLM / LoRA checkpoints (NOT a top-level `models/` dir)
+
+### Host-side scripts (run outside the container)
+- `Start-OpenHands.bat`, `Invisible-OpenHands.vbs` — launchers (host-absolute paths; do NOT "fix")
+- `docker-compose.yml` — mounts host project dir → container path
+- `update_music.py`, `script.py`, `backend/quantize_meissa.py` — one-off tools, not app code
+
+### Files to skip when grepping / reading
+`.git`, `node_modules`, `.venv`, `__pycache__`, `dist`, `build`,
+`data/renders/**`, `models/*.gguf`, `models/*.safetensors`,
+`backend/assets/fonts/**`, `*.db`, `*.sqlite`,
+`haarcascade_frontalface_default.xml`.
+
+## Search discipline
+
+- Trust the Project Map above. Do not enumerate the repo before acting.
+- For "where is X implemented?", prefer a targeted grep over whole-tree:
+    `rg -n 'symbol' backend/app frontend/src`
+  Never `rg --files` or `rg -r` on the repo root.
+- When code needs a filesystem path, import it from
+  `backend/app/core/paths.py`. Never introduce a new absolute path in
+  service code.
+- If the Project Map is wrong or a file is missing, say so in one sentence
+  and propose the map update — do not fall back to full-tree exploration.
+- After adding or moving a file that appears in the Project Map, update the
+  map in the same commit.
 
 
 # Setup & Run Commands
@@ -70,7 +124,9 @@ Before declaring a task complete:
 
 # ⚙️ Sandbox / Editing Notes (session-learned)
 
-- The repo is mounted from the host Windows drive (`/creator-desk` <- `C:\`, 9p fs).
+- The repo is mounted at `/workspace` inside the container
+    (`docker-compose.yml`: `C:\Projects Openhands:/workspace`, 9p fs).
+    Note: earlier docs referred to `/creator-desk` — that path is stale.
 - **`file_editor` tool fails to write** on this mount (`Errno 13: Operation not permitted`) and creates a temp file. Use terminal-based Python `.replace()` edits instead (per AGENTS.md rule #1).
 - Avoid `grep -r "<port>"` across `backend/` or the whole repo — it chokes on the huge `haarcascade_frontalface_default.xml`, venv, and vLLM service trees. Scope greps to `backend/app` and `frontend/src`, excluding `venv`, `__pycache__`, `.git`, `node_modules`, and `assets`.
 - Infra ports left untouched: vLLM :8002, Ollama :11434/11435, Vite UI :5173 (browser auto-open in start.bat).

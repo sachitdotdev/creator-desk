@@ -1,3 +1,4 @@
+from ..core.paths import PROCESSED_DIR, TRANSCRIPTS_DIR
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi import BackgroundTasks
@@ -16,9 +17,9 @@ from app.services.llm_service import LLMService
 from app.services.render_service import RenderService
 from app.services.qc_bot import audit_clip
 from app import models
-from app.core.config import BASE_DIR, SOURCES_DIR, TRANSCRIPTS_DIR
 
 router = APIRouter()
+
 
 @router.get("/videos")
 def get_videos(db: Session = Depends(get_db)):
@@ -37,7 +38,7 @@ def upload_video(
     import uuid
 
     filename = f"{uuid.uuid4()}.{file.filename.split('.')[-1]}"
-    file_path = str(SOURCES_DIR / "processed" / filename)
+    file_path = str(SOURCES_DIR / filename)
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -84,7 +85,7 @@ async def _run_pipeline(video_id: str):
 
         # Resolve video path to absolute
         if not os.path.isabs(video.path):
-            video_path = os.path.join(str(BASE_DIR), video.path)
+            video_path = os.path.join(str(SOURCES_DIR), video.path)
         else:
             video_path = video.path
         if not os.path.exists(video_path):
@@ -177,7 +178,7 @@ async def _run_pipeline(video_id: str):
         db.commit()
 
         # Cleanup temp audio chunks
-        for f in glob.glob("C:/Sachit/Creator Desk/backend/data/sources/processed/*.wav"):
+        for f in glob.glob(str(PROCESSED_DIR / "*.wav")):
             try: os.remove(f)
             except: pass
 

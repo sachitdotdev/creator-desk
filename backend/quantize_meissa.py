@@ -6,7 +6,7 @@ import torch
 
 # --- Configuration ---
 model_id = "Orion-zhen/Meissa-Qwen2.5-7B-Instruct"
-output_dir = "C:/Sachit/models/meissa-7b-awq"
+output_dir = "C:/Projects Openhands/Active/Creator Desk/models/meissa-7b-awq"
 
 # --- 1. Load Model and Tokenizer ---
 print(f"Loading model: {model_id}")
