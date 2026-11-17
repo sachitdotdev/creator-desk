@@ -26,7 +26,7 @@ MUSIC_HZ = 220.0   # BGM bed tone
 SILENT_GRAPH = "[0:a]anull[voice_mix];[voice_mix]anull[audio_mix]"
 LOUDNORM_TAIL = "[audio_mix]loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
 NO_LOUDNORM_TAIL = "[audio_mix]anull[aout]"
-LIMITED_TAIL = "[audio_mix]alimiter=limit=0.95[aout]"
+LIMITED_TAIL = "[audio_mix]alimiter=limit=0.95:level=0[aout]"
 
 
 def _make_file(path, payload=b"\x00"):

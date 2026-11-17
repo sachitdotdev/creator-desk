@@ -166,8 +166,10 @@ def build_audio_filter(
     elif len(mix_labels) > 1:
         # No loudnorm here means the caller normalizes afterwards, but the
         # summed mix still has to stay below 0 dBFS. Guard it with a limiter.
+        # level=0 disables alimiter's auto-level: it must only cap peaks and
+        # never re-normalize the mix (loudnorm owns overall loudness).
         filters.append(
-            f"[audio_mix]alimiter=limit={DEFAULT_MIX_LIMIT:g}[aout]"
+            f"[audio_mix]alimiter=limit={DEFAULT_MIX_LIMIT:g}:level=0[aout]"
         )
     else:
         # Passthrough must stay byte-identical for the no-SFX/no-BGM case.
