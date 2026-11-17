@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -25,6 +26,8 @@ log = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = frozenset({".mp3", ".wav", ".m4a", ".ogg"})
 METADATA_FIELDS = ("title", "artist", "license", "mood", "bpm")
+# Bounded retry budget for exclusive-create name collisions on upload.
+_MAX_UPLOAD_NAME_ATTEMPTS = 1000
 
 
 class MusicError(ValueError):
@@ -71,6 +74,8 @@ def _coerce_bpm(value: Any) -> int | float | None:
         bpm = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(bpm):
+        return None
     return int(bpm) if bpm.is_integer() else bpm
 
 
@@ -81,7 +86,9 @@ def read_metadata(track: Path) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers both JSONDecodeError and UnicodeDecodeError, so one
+        # malformed sidecar can never break GET /api/music.
         log.warning("[MUSIC] Ignoring unreadable sidecar %s: %s", sidecar.name, exc)
         return {}
     if not isinstance(data, dict):
@@ -148,24 +155,43 @@ def resolve_track(name: str | None) -> Path | None:
     return resolved
 
 
-def _unique_path(target: Path) -> Path:
-    if not target.exists():
-        return target
-    for i in range(2, 1000):
-        candidate = target.with_name(f"{target.stem} ({i}){target.suffix}")
-        if not candidate.exists():
-            return candidate
-    raise MusicError("Too many tracks with that name")
+def _numbered_name(safe_name: str, attempt: int) -> str:
+    """Return the candidate filename for the ``attempt``-th create try."""
+    if attempt <= 1:
+        return safe_name
+    stem = Path(safe_name).stem
+    suffix = Path(safe_name).suffix
+    return f"{stem} ({attempt}){suffix}"
 
 
 def save_upload(filename: str | None, stream: BinaryIO) -> dict[str, Any]:
-    """Persist an uploaded track into MUSIC_DIR and return its description."""
-    safe_name = sanitize_filename(filename)
-    target = _unique_path(_music_dir() / safe_name)
+    """Persist an uploaded track into MUSIC_DIR and return its description.
 
-    written = 0
+    The target file is created exclusively (``"xb"``) so two concurrent uploads
+    can never write into the same file. A name collision regenerates a unique
+    name and retries; only a file this call actually created is ever removed.
+    """
+    safe_name = sanitize_filename(filename)
+    music_dir = _music_dir()
+
+    created: Path | None = None
+    target: Path | None = None
+    out = None
     try:
-        with open(target, "wb") as out:
+        for attempt in range(1, _MAX_UPLOAD_NAME_ATTEMPTS + 1):
+            candidate = music_dir / _numbered_name(safe_name, attempt)
+            try:
+                # Created exclusively; the handle is closed by the with-block below.
+                out = open(candidate, "xb")  # noqa: SIM115
+            except FileExistsError:
+                continue
+            created = target = candidate
+            break
+        else:
+            raise MusicError("Too many tracks with that name")
+
+        written = 0
+        with out:
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
@@ -179,11 +205,10 @@ def save_upload(filename: str | None, stream: BinaryIO) -> dict[str, Any]:
                 out.write(chunk)
         if written == 0:
             raise MusicError("Uploaded file is empty")
-    except MusicError:
-        target.unlink(missing_ok=True)
-        raise
-    except OSError:
-        target.unlink(missing_ok=True)
+    except BaseException:
+        # Only the file this call created may be removed (never a peer's file).
+        if created is not None:
+            created.unlink(missing_ok=True)
         raise
 
     log.info("[MUSIC] Uploaded %s (%d bytes)", target.name, written)

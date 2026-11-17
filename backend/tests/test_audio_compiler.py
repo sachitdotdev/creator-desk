@@ -1,4 +1,4 @@
-"""Phase 3.1/3.2 - SFX insertion + BGM ducking: filtergraph and real-FFmpeg tests."""
+﻿"""Phase 3.1/3.2 - SFX insertion + BGM ducking: filtergraph and real-FFmpeg tests."""
 
 import logging
 import subprocess
@@ -217,7 +217,50 @@ def test_sfx_volume_is_clamped_and_sanitized(sfx_path):
     assert "volume=0.5[sfx0]" in graph
 
     graph, _ = build_audio_filter(sfx_events=[{"path": sfx_path, "start": 0, "volume": "loud"}])
-    assert f"volume={audio_compiler.DEFAULT_SFX_VOLUME:g}[sfx0]" in graph
+    assert f"volume={AUDIO_SFX_VOLUME:g}[sfx0]" in graph
+
+    # A null volume uses the configured default, not a hardcoded 0.9.
+    graph, _ = build_audio_filter(sfx_events=[{"path": sfx_path, "start": 0, "volume": None}])
+    assert f"volume={AUDIO_SFX_VOLUME:g}[sfx0]" in graph
+
+
+def test_inline_loudnorm_defaults_match_ebu_r128_targets():
+    graph, _ = build_audio_filter(sfx_events=[])
+
+    assert graph.endswith("[audio_mix]loudnorm=I=-14:TP=-1.5:LRA=11[aout]")
+    assert audio_compiler.DEFAULT_LOUDNORM == "I=-14:TP=-1.5:LRA=11"
+
+
+def test_inline_loudnorm_follows_overridden_targets(monkeypatch):
+    monkeypatch.setattr(audio_compiler, "LOUDNESS_TARGET_I", -16.0)
+    monkeypatch.setattr(audio_compiler, "LOUDNESS_TARGET_TP", -2.0)
+    monkeypatch.setattr(audio_compiler, "LOUDNESS_TARGET_LRA", 9.0)
+
+    graph, _ = build_audio_filter(sfx_events=[])
+
+    assert graph.endswith("[audio_mix]loudnorm=I=-16:TP=-2:LRA=9[aout]")
+
+
+@pytest.mark.parametrize("start", [float("inf"), float("-inf"), float("nan"), 1e999, 1e306])
+def test_non_finite_sfx_start_is_skipped_without_reserving_an_input(
+    tmp_path, caplog, start
+):
+    valid = _make_file(tmp_path / "boom.mp3")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.audio_compiler"):
+        graph, extra_inputs = build_audio_filter(
+            sfx_events=[
+                {"path": valid, "start": start},
+                {"path": valid, "start": 1.0},
+            ]
+        )
+
+    # The skipped event leaves no unused input and does not shift labels.
+    assert extra_inputs == [valid]
+    assert "[1:a]adelay=1000|1000,volume=0.9[sfx0]" in graph
+    assert "[2:a]" not in graph
+    assert "amix=inputs=2" in graph
+    assert "SFX skipped" in caplog.text
 
 
 # ------------------------------------------------------------- compile_plan
@@ -271,6 +314,25 @@ def test_compile_plan_missing_sfx_is_skipped_not_fatal(monkeypatch, tmp_path, ca
         )
 
     assert sfx_files == []
+    assert "skipped" in caplog.text
+
+
+@pytest.mark.parametrize("start", [float("inf"), float("-inf"), float("nan"), 1e999, 1e306])
+def test_compile_plan_skips_non_finite_sfx_time(monkeypatch, tmp_path, caplog, start):
+    expected = _make_file(tmp_path / "boom.mp3")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.edit_compiler"):
+        _, sfx_files = _plan(
+            [
+                {"type": "sfx", "name": "boom", "time_sec": start},
+                {"type": "sfx", "name": "boom", "time_sec": 2.0},
+            ],
+            monkeypatch, tmp_path,
+        )
+
+    assert len(sfx_files) == 1
+    assert sfx_files[0]["path"] == expected
+    assert sfx_files[0]["start"] == pytest.approx(2.0)
     assert "skipped" in caplog.text
 
 

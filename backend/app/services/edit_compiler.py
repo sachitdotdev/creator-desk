@@ -1,4 +1,5 @@
 import logging
+import math
 import textwrap
 from pathlib import Path
 
@@ -9,6 +10,9 @@ log = logging.getLogger(__name__)
 
 FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
 _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+# A sane ceiling for an SFX timestamp: beyond this the LLM output is junk
+# (non-finite or overflowing floats) and the event is skipped.
+MAX_SFX_START_SECONDS = 3600.0
 
 
 def resolve_sfx_path(op: dict) -> str | None:
@@ -166,6 +170,8 @@ def compile_plan(
                     raw_time = op.get("start", rel_start + clip_start_time)
                 try:
                     event_time = float(str(raw_time).strip().rstrip("s"))
+                    if not math.isfinite(event_time) or event_time > MAX_SFX_START_SECONDS:
+                        raise ValueError(f"out-of-range time_sec/start: {event_time!r}")
                 except (TypeError, ValueError):
                     log.warning("[SFX] skipped: invalid time_sec/start=%r", raw_time)
                     continue

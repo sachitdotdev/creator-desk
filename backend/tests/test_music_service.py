@@ -65,6 +65,31 @@ def test_invalid_sidecar_is_ignored_with_warning(music_dir, caplog):
     assert "Ignoring unreadable sidecar" in caplog.text
 
 
+def test_non_utf8_sidecar_is_ignored_with_warning(music_dir, caplog):
+    _track(music_dir / "lofi.mp3")
+    (music_dir / "lofi.mp3.json").write_bytes(b'{"title": "\xff\xfe\x80"}')
+
+    with caplog.at_level(logging.WARNING, logger="app.services.music_service"):
+        tracks = music_service.list_tracks()
+
+    # One broken sidecar must never break GET /api/music.
+    assert tracks[0]["title"] == "lofi"
+    assert "Ignoring unreadable sidecar" in caplog.text
+
+
+@pytest.mark.parametrize("bpm", ["inf", "-inf", "nan", float("inf"), float("nan")])
+def test_non_finite_bpm_is_dropped(music_dir, bpm):
+    _track(music_dir / "lofi.mp3")
+    (music_dir / "lofi.mp3.json").write_text(
+        json.dumps({"title": "Late Night", "bpm": bpm}), encoding="utf-8"
+    )
+
+    tracks = music_service.list_tracks()
+
+    assert tracks[0]["title"] == "Late Night"
+    assert tracks[0]["bpm"] is None
+
+
 def test_sanitize_filename_strips_paths_and_rejects_bad_extension():
     assert music_service.sanitize_filename("../../evil.mp3") == "evil.mp3"
     assert music_service.sanitize_filename(r"..\..\evil.mp3") == "evil.mp3"
@@ -104,6 +129,28 @@ def test_save_upload_deduplicates_names(music_dir):
 
     assert first["filename"] == "lofi.mp3"
     assert second["filename"] == "lofi (2).mp3"
+
+
+def test_save_upload_retries_on_exclusive_create_collision(music_dir, monkeypatch):
+    # Simulate the race where the chosen name appears between _unique_path and
+    # open(): the exclusive create must regenerate the name instead of failing.
+    real_open = open
+    collisions = {"remaining": 1}
+
+    def colliding_open(file, mode="r", *args, **kwargs):
+        if mode == "xb" and collisions["remaining"] > 0:
+            collisions["remaining"] -= 1
+            raise FileExistsError(str(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", colliding_open)
+
+    description = music_service.save_upload("lofi.mp3", io.BytesIO(b"audio-bytes"))
+
+    assert description["filename"] == "lofi (2).mp3"
+    assert (music_dir / "lofi (2).mp3").read_bytes() == b"audio-bytes"
+    # The losing candidate was never created by this call and is left alone.
+    assert not (music_dir / "lofi.mp3").exists()
 
 
 def test_save_upload_enforces_size_limit(music_dir, monkeypatch):

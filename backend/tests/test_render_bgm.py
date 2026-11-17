@@ -51,6 +51,31 @@ def test_traversal_attempt_degrades_to_no_music(music_dir, caplog):
     assert "BGM skipped" in caplog.text
 
 
+def test_legacy_absolute_background_music_inside_music_dir_resolves(music_dir):
+    track = music_dir / "lofi.mp3"
+    track.write_bytes(b"audio")
+
+    path, volume, _ = resolve_bgm_settings(
+        {"background_music": str(track), "background_music_volume": 0.4}
+    )
+
+    assert path == str(track.resolve())
+    assert volume == pytest.approx(0.4)
+
+
+def test_legacy_absolute_background_music_outside_music_dir_is_rejected(
+    music_dir, caplog
+):
+    outside = music_dir.parent / "secret.mp3"
+    outside.write_bytes(b"secret")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.render_service"):
+        path, _, _ = resolve_bgm_settings({"background_music": str(outside)})
+
+    assert path is None
+    assert "BGM skipped" in caplog.text
+
+
 def test_templates_without_bgm_keep_legacy_behavior(music_dir):
     path, volume, duck = resolve_bgm_settings({})
 

@@ -73,7 +73,21 @@ def resolve_bgm_settings(template_config: dict | None) -> tuple[str | None, floa
     if not track:
         return None, volume, duck
 
-    resolved = music_service.resolve_track(str(track))
+    track_name = str(track).strip()
+    # Legacy templates stored an absolute path. Accept it only when it points
+    # inside MUSIC_DIR; convert to the basename, which resolve_track then
+    # confines once more. Anything outside MUSIC_DIR stays rejected.
+    legacy = Path(track_name)
+    if legacy.is_absolute():
+        music_dir = Path(music_service.MUSIC_DIR).resolve()
+        try:
+            resolved_legacy = legacy.resolve()
+        except OSError:
+            resolved_legacy = None
+        if resolved_legacy is not None and music_dir in resolved_legacy.parents:
+            track_name = resolved_legacy.name
+
+    resolved = music_service.resolve_track(track_name)
     if resolved is None:
         log.warning(
             "[AUDIO] BGM skipped: track %r not found in %s; rendering without music",
@@ -239,8 +253,8 @@ class RenderService:
         # Runs only when the LOUDNESS_NORMALIZE config flag is enabled and FFmpeg
         # is available; otherwise the render is kept exactly as-is.
         if LOUDNESS_NORMALIZE and is_ffmpeg_available():
+            normalized_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}_loudnorm.mp4"
             try:
-                normalized_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}_loudnorm.mp4"
                 loudness_stats = apply_loudness_normalization(
                     str(output_path),
                     str(normalized_path),
@@ -258,7 +272,16 @@ class RenderService:
                 else:
                     print("DEBUG render_clip: loudnorm skipped: ffmpeg not available", flush=True)
             except Exception as exc:  # noqa: BLE001 - loudness failure keeps the un-normalized render
+                # output_path is never reassigned here, so a failed pass leaves
+                # the original, un-normalized render in place.
                 print(f"DEBUG render_clip: loudness normalization failed, keeping un-normalized render: {exc}", flush=True)
+            finally:
+                # The temp file is either already moved or a partial leftover;
+                # best effort removal, never fatal.
+                try:
+                    os.unlink(normalized_path)
+                except OSError:
+                    pass
 
         # Generate a thumbnail (best-effort; failure does not fail the render)
         thumb_path = render_root / f"clip_{clip.id}_{uuid.uuid4().hex[:8]}.jpg"
