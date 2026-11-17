@@ -60,6 +60,10 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen14b-awq")
 
 OLLAMA_ACTIVE_MODEL: str | None = None
 
+# Phase 4.0 - single-tenant GPU guardrails. A VRAM stage waits at most this
+# long for the process-wide GPU lock before failing loudly with GPULockTimeout.
+GPU_LOCK_TIMEOUT = float(os.getenv("GPU_LOCK_TIMEOUT", "900"))
+
 # Whisper
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")  # cuda | cpu

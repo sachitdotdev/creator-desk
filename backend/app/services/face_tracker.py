@@ -1,6 +1,7 @@
 import os
 
 from app.core.config import FACE_MODEL
+from app.core.gpu_lock import gpu_lock
 
 
 def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080) -> bool:
@@ -14,7 +15,8 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
             return False
 
         from ultralytics import YOLO
-        model = YOLO(FACE_MODEL)
+        with gpu_lock("face-tracker:yolo-load"):
+            model = YOLO(FACE_MODEL)
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened(): return False
@@ -37,17 +39,18 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
             if not ret or frame_count > (duration * fps): break
 
             if frame_count % frame_skip == 0:
-                results = model(frame, verbose=False, device="cuda")
-                current_x = None
-                max_area = 0
+                with gpu_lock("face-tracker:inference"):
+                    results = model(frame, verbose=False, device="cuda")
+                    current_x = None
+                    max_area = 0
 
-                for r in results:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        area = (x2 - x1) * (y2 - y1)
-                        if area > max_area:
-                            max_area = area
-                            current_x = x1 + (x2 - x1) / 2
+                    for r in results:
+                        for box in r.boxes:
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            area = (x2 - x1) * (y2 - y1)
+                            if area > max_area:
+                                max_area = area
+                                current_x = x1 + (x2 - x1) / 2
 
                 if current_x is not None:
                     if smoothed_x is None: smoothed_x = current_x

@@ -43,6 +43,7 @@ from pathlib import Path
 from app.core.config import (
     WHISPER_MODEL,
 )
+from app.core.gpu_lock import gpu_lock
 from app.core.processing_utils import clear_gpu_memory
 
 # --------------------------------------------------------------------------- PyAV compatibility
@@ -187,17 +188,19 @@ class WhisperService:
         except ImportError as exc:
             raise RuntimeError(f"Failed to import faster_whisper: {exc}") from exc
 
-        try:
-            self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cuda", compute_type="int8")
-        except Exception:  # noqa: BLE001 - CUDA -> CPU fallback is best-effort
-            print("DEBUG: CUDA failed, falling back to CPU", flush=True)
-            self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cpu", compute_type="int8")
+        # Model construction touches VRAM: only one tenant may do this at once.
+        with gpu_lock("whisper:model-load"):
+            try:
+                self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cuda", compute_type="int8")
+            except Exception:  # noqa: BLE001 - CUDA -> CPU fallback is best-effort
+                print("DEBUG: CUDA failed, falling back to CPU", flush=True)
+                self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cpu", compute_type="int8")
 
-        print("DEBUG: Whisper model loaded successfully.", flush=True)
+            print("DEBUG: Whisper model loaded successfully.", flush=True)
 
-        # Create a batched inference pipeline that fits comfortably in 12GB VRAM
-        self._batched_model = BatchedInferencePipeline(model=self._model)
-        self._model_size = WHISPER_MODEL
+            # Create a batched inference pipeline that fits comfortably in 12GB VRAM
+            self._batched_model = BatchedInferencePipeline(model=self._model)
+            self._model_size = WHISPER_MODEL
         return self._model
 
 
@@ -274,15 +277,17 @@ class WhisperService:
         for i, chunk_path in enumerate(chunks):
             print(f"DEBUG: [transcribe] Processing chunk {i+1}/{len(chunks)}...")
 
-            segments, info = batched_model.transcribe(
-                str(chunk_path),
-                batch_size=4,
-                vad_filter=True,
-                vad_parameters={"threshold": 0.3},
-                language="en"
-            )
-
-            chunk_segments = list(segments)
+            with gpu_lock("whisper:transcribe"):
+                segments, info = batched_model.transcribe(
+                    str(chunk_path),
+                    batch_size=4,
+                    vad_filter=True,
+                    vad_parameters={"threshold": 0.3},
+                    language="en"
+                )
+                # Inference is lazy: the generator must be consumed while the
+                # GPU lock is still held.
+                chunk_segments = list(segments)
 
             # Offset timestamps to match original audio
             for s in chunk_segments:
@@ -294,27 +299,29 @@ class WhisperService:
 
             current_offset += info.duration
 
-            # Force memory cleanup per chunk
-            del chunk_segments
-            gc.collect()
-            torch.cuda.empty_cache()
+            # Force memory cleanup per chunk (still a VRAM-touching step).
+            with gpu_lock("whisper:chunk-flush"):
+                del chunk_segments
+                gc.collect()
+                torch.cuda.empty_cache()
 
         # --- WHISPERX FORCED ALIGNMENT ---
         print("DEBUG: Running WhisperX forced alignment...")
-        device = "cuda"
-        # Load the alignment model for English
-        model_a, metadata = whisperx.load_align_model(language_code="en", device=device)
-        # Align the segments
-        aligned_result = whisperx.align(
-            all_segments,
-            model_a,
-            metadata,
-            audio_path,
-            device,
-            return_char_alignments=False
-        )
-        # The result now has word-level timestamps
-        all_segments = aligned_result["segments"]
+        with gpu_lock("whisper:alignment"):
+            device = "cuda"
+            # Load the alignment model for English
+            model_a, metadata = whisperx.load_align_model(language_code="en", device=device)
+            # Align the segments
+            aligned_result = whisperx.align(
+                all_segments,
+                model_a,
+                metadata,
+                audio_path,
+                device,
+                return_char_alignments=False
+            )
+            # The result now has word-level timestamps
+            all_segments = aligned_result["segments"]
         print("DEBUG: WhisperX alignment complete.")
 
         # Cleanup temp files
