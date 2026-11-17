@@ -68,7 +68,9 @@ or `ls -R` at the start of a task.** Open only the files you need.
   `launch.bat --model <meissa-7b-awq path> --port 8002 --max-model-len 4096
   --gpu-memory-utilization 0.60 --max-num-seqs 4 --enforce-eager`. It exposes an
   OpenAI-compatible `/v1` API and `GET /health`. Called by root `start.bat`; the
-  model path/flags live in that script (gitignored). Model: `C:\Sachit\models\meissa-7b-awq`.
+  model path/flags live in that script (gitignored). Model: `<model-directory>\meissa-7b-awq`.
+  The real model directory is configured in the gitignored local launcher, not
+  in this tracked document.
 
 ### Tests & tooling
 - `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates)
