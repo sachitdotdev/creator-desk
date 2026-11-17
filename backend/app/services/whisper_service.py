@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import logging
 import os
 import pathlib
@@ -44,7 +43,7 @@ from app.core.config import (
     WHISPER_MODEL,
 )
 from app.core.gpu_lock import gpu_lock
-from app.core.processing_utils import clear_gpu_memory
+from app.core.processing_utils import flush_vram
 
 # --------------------------------------------------------------------------- PyAV compatibility
 # faster-whisper decodes audio via ``av.open(input, mode="r", metadata_errors="ignore")``.
@@ -201,6 +200,7 @@ class WhisperService:
             # Create a batched inference pipeline that fits comfortably in 12GB VRAM
             self._batched_model = BatchedInferencePipeline(model=self._model)
             self._model_size = WHISPER_MODEL
+            flush_vram("whisper:model-load")
         return self._model
 
 
@@ -210,9 +210,10 @@ class WhisperService:
         Called between batch jobs to prevent CUDA memory from accumulating
         during long-running sessions. Safe to call when no model is loaded.
         """
-        self._model = None
-        self._model_size = None
-        clear_gpu_memory()
+        with gpu_lock("whisper:unload"):
+            self._model = None
+            self._model_size = None
+            flush_vram("whisper:unload")
 
     def extract_audio(self, video_path: str, audio_path: str) -> str:
         """Extract audio from a video file using FFmpeg.
@@ -249,7 +250,6 @@ class WhisperService:
 
         import tempfile
 
-        import torch
         import whisperx
         from faster_whisper import BatchedInferencePipeline
 
@@ -288,6 +288,7 @@ class WhisperService:
                 # Inference is lazy: the generator must be consumed while the
                 # GPU lock is still held.
                 chunk_segments = list(segments)
+                flush_vram("whisper:transcribe")
 
             # Offset timestamps to match original audio
             for s in chunk_segments:
@@ -296,14 +297,9 @@ class WhisperService:
                     "end": float(s.end + current_offset),
                     "text": s.text.strip()
                 })
+            del chunk_segments
 
             current_offset += info.duration
-
-            # Force memory cleanup per chunk (still a VRAM-touching step).
-            with gpu_lock("whisper:chunk-flush"):
-                del chunk_segments
-                gc.collect()
-                torch.cuda.empty_cache()
 
         # --- WHISPERX FORCED ALIGNMENT ---
         print("DEBUG: Running WhisperX forced alignment...")
@@ -322,6 +318,7 @@ class WhisperService:
             )
             # The result now has word-level timestamps
             all_segments = aligned_result["segments"]
+            flush_vram("whisper:alignment")
         print("DEBUG: WhisperX alignment complete.")
 
         # Cleanup temp files

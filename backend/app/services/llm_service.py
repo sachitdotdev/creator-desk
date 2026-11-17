@@ -117,7 +117,12 @@ class LLMService:
                 ],
                 temperature=0.7,
                 max_tokens=2048,
-                response_format={"type": "json_schema", "json_schema": {"name": "clips_response", "schema": schema}}
+                # Keep the structured JSON response. ``keep_alive: 0`` tells an
+                # Ollama-compatible backend to unload the model after this call
+                # so VRAM is released between stages; vLLM ignores the extra
+                # field and the JSON rule stays intact.
+                response_format={"type": "json_schema", "json_schema": {"name": "clips_response", "schema": schema}},
+                extra_body={"keep_alive": 0},
             )
             
             raw = resp.choices[0].message.content

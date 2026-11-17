@@ -60,6 +60,11 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen14b-awq")
 
 OLLAMA_ACTIVE_MODEL: str | None = None
 
+# Phase 4.0 - ComfyUI VRAM release. A single POST to /free asks a running
+# ComfyUI instance to unload its models; it is a no-op when nothing listens.
+COMFYUI_URL = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188").strip().rstrip("/")
+COMFYUI_FREE_TIMEOUT = float(os.getenv("COMFYUI_FREE_TIMEOUT", "1"))
+
 # Phase 4.0 - single-tenant GPU guardrails. A VRAM stage waits at most this
 # long for the process-wide GPU lock before failing loudly with GPULockTimeout.
 GPU_LOCK_TIMEOUT = float(os.getenv("GPU_LOCK_TIMEOUT", "900"))
