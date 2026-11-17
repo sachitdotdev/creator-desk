@@ -1,19 +1,14 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard,
   Film,
   Edit3,
   Calendar,
   User,
-  ChevronLeft,
-  ChevronRight,
   Menu,
   X,
-  Play,
   Upload,
   ClipboardList,
-  Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -31,7 +26,7 @@ interface SidebarProps {
   setCollapsed: (c: boolean) => void;
 }
 
-export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
+export function Sidebar({ collapsed }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);

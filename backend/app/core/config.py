@@ -86,6 +86,10 @@ AUDIO_DUCK_RATIO = float(os.getenv("AUDIO_DUCK_RATIO", "8"))
 AUDIO_DUCK_ATTACK = int(os.getenv("AUDIO_DUCK_ATTACK", "20"))    # ms
 AUDIO_DUCK_RELEASE = int(os.getenv("AUDIO_DUCK_RELEASE", "400"))  # ms
 
+# Phase 3.6 - BGM library uploads (assets/music).
+MUSIC_MAX_UPLOAD_MB = int(os.getenv("MUSIC_MAX_UPLOAD_MB", "25"))
+MUSIC_MAX_UPLOAD_BYTES = MUSIC_MAX_UPLOAD_MB * 1024 * 1024
+
 # Phase 3.5 - Loudness normalization (EBU R128 two-pass). Optional final audio step.
 LOUDNESS_NORMALIZE = os.getenv("LOUDNESS_NORMALIZE", "false").strip().lower() in ("1", "true", "yes", "on")
 LOUDNESS_TARGET_I = float(os.getenv("LOUDNESS_TARGET_I", "-14"))

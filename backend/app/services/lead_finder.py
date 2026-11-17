@@ -18,7 +18,7 @@ import concurrent.futures
 import json
 import logging
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +44,7 @@ LEADS_PATH = SOURCES_DIR / "leads.json"
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_upload_date(raw: Any) -> datetime | None:
@@ -53,10 +53,10 @@ def _parse_upload_date(raw: Any) -> datetime | None:
         return None
     try:
         if isinstance(raw, (int, float)):
-            return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+            return datetime.fromtimestamp(float(raw), tz=UTC)
         text = str(raw).strip()
         if len(text) == 8 and text.isdigit():
-            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=timezone.utc)
+            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=UTC)
     except (TypeError, ValueError, OSError):
         return None
     return None

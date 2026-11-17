@@ -7,16 +7,12 @@ import {
   deleteClip,
   reRenderClip,
   listTemplates,
-  getRender,
-  getSource,
 } from "@/lib/api";
 import {
   Button,
   Card,
   CardContent,
   CardFooter,
-  CardHeader,
-  CardTitle,
   Input,
   Label,
   Select,
@@ -34,19 +30,12 @@ import {
   Separator,
 } from "@/components/ui";
 import {
-  Play,
   Edit,
   Trash2,
   RefreshCw,
-  CheckCircle2,
-  X,
   Film,
   Loader2,
-  ThumbsUp,
-  ThumbsDown,
-  Download,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { formatTime, formatDuration } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -71,7 +60,7 @@ export default function ClipReview() {
 
   const clips = useQuery({
     queryKey: ["clips", videoId],
-    queryFn: () => listClips(videoId ? parseInt(videoId) : undefined),
+    queryFn: () => listClips(videoId ?? undefined),
   });
 
   const filteredClips = useMemo(() => {
@@ -91,7 +80,7 @@ export default function ClipReview() {
       updateClip(id, body).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clips"] });
-      refetch();
+      clips.refetch();
       toast.success("Clip updated");
       setEditOpen(false);
     },
@@ -111,13 +100,11 @@ export default function ClipReview() {
     mutationFn: (id: number) => deleteClip(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clips"] });
-      refetch();
+      clips.refetch();
       toast.success("Clip deleted");
     },
   });
 
-
-  const hashtagsArr = (s: string | null) => (s ? s.split(",").filter(Boolean) : []);
 
   return (
     <div className="space-y-6">
@@ -129,7 +116,7 @@ export default function ClipReview() {
           </p>
         </div>
         <div className="flex items-end gap-2">
-          <Button onClick={() => refetch()}>
+          <Button onClick={() => clips.refetch()}>
             <RefreshCw className="h-4 w-4 mr-2" /> Refresh
           </Button>
         </div>
@@ -397,16 +384,3 @@ function ClipCard({
   );
 }
 
-function ActionButton({ icon, active, onClick }: { icon: JSX.Element; active: boolean; onClick: (e: React.MouseEvent) => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "p-1.5 rounded transition-colors",
-        active ? "text-primary bg-primary/10" : "text-muted-foreground hover:bg-accent"
-      )}
-    >
-      {icon}
-    </button>
-  );
-}

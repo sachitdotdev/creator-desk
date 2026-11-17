@@ -10,7 +10,7 @@ straightforward to wire real TikTok / YouTube / Instagram APIs later
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app import models
 
@@ -50,7 +50,7 @@ class SocialService:
         post_url = self._publish(account, clip)
 
         schedule.status = "posted"
-        schedule.posted_at = datetime.now(timezone.utc)
+        schedule.posted_at = datetime.now(UTC)
         db.commit()
         db.refresh(schedule)
 

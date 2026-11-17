@@ -30,6 +30,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/services/audio_compiler.py`     — Phase 3 audio stages (SFX, ducking)
 - `backend/app/services/audio_loudness.py`    — Phase 3 loudness normalization (EBU R128 two-pass loudnorm)
       (planned: `audio_stems.py`)
+- `backend/app/services/music_service.py`     — Phase 3.6 BGM library (filesystem scan, sidecars, safe uploads)
 - `backend/app/services/social_service.py`     — export/distribution stubs
 - `backend/app/services/batch_service.py`      — Automated batch video processing
 - `backend/app/services/lead_finder.py`        — YouTube Shorts candidate discovery

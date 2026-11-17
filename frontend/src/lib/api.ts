@@ -55,6 +55,31 @@ export const updateTemplate = (id: number, body: Record<string, unknown>) =>
 export const deleteTemplate = (id: number) => api.delete(`/api/templates/${id}`);
 export const seedTemplates = () => api.post("/api/templates/seed");
 
+// Music library (Phase 3.6 - BGM picker)
+export type MusicTrack = {
+  name: string;
+  filename: string;
+  title: string;
+  artist: string;
+  license: string;
+  mood: string;
+  bpm: number | null;
+  size_bytes: number;
+  preview_url: string;
+};
+
+export const listMusic = (): Promise<MusicTrack[]> =>
+  api.get("/api/music").then((res) => res.data);
+export const uploadMusic = (file: File) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return api.post("/api/music", fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+export const musicPreviewUrl = (name: string) =>
+  `${BASE_URL}/api/music/${encodeURIComponent(name)}/preview`;
+
 // Schedules
 export const listSchedules = () => api.get("/api/schedules");
 export const createSchedule = (body: Record<string, unknown>) => api.post("/api/schedules", body);
@@ -80,7 +105,7 @@ export const getTrending = () => api.get('/api/discover/trending').then(res => r
 // Status
 export const status = () => {
   try {
-    const res = api.get("/api/videos");
+    api.get("/api/videos");
     return { data: { ollama_available: true } };
   } catch {
     return { data: { ollama_available: false } };

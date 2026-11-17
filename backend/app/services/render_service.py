@@ -6,6 +6,8 @@ from ..core.paths import RENDERS_DIR
 
 import gc
 import json
+import logging
+import math
 import os
 import subprocess
 import uuid
@@ -34,6 +36,7 @@ from app.core.processing_utils import (
     run_subprocess,
 )
 from app.models import Clip, Template, Video
+from app.services import music_service
 from app.services.audio_compiler import build_audio_filter
 from app.services.audio_loudness import (
     apply_loudness_normalization,
@@ -41,6 +44,44 @@ from app.services.audio_loudness import (
 )
 from app.services.edit_compiler import compile_plan
 from app.services.face_tracker import generate_sendcmd_file
+
+log = logging.getLogger(__name__)
+
+
+def _coerce_music_volume(value: Any, default: float = AUDIO_MUSIC_VOLUME) -> float:
+    try:
+        volume = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(volume):
+        return default
+    return min(max(volume, 0.0), 1.0)
+
+
+def resolve_bgm_settings(template_config: dict | None) -> tuple[str | None, float, bool]:
+    """Resolve a template's BGM settings to (absolute path, volume, duck).
+
+    ``bgm_track`` is a filename inside MUSIC_DIR. A missing/unknown track is a
+    logged warning and a music-less render, never an exception.
+    """
+    config = template_config if isinstance(template_config, dict) else {}
+    track = config.get("bgm_track") or config.get("background_music")
+    volume = _coerce_music_volume(
+        config.get("bgm_volume", config.get("background_music_volume", AUDIO_MUSIC_VOLUME))
+    )
+    duck = bool(config.get("bgm_duck", config.get("background_music_duck", True)))
+
+    if not track:
+        return None, volume, duck
+
+    resolved = music_service.resolve_track(str(track))
+    if resolved is None:
+        log.warning(
+            "[AUDIO] BGM skipped: track %r not found in %s; rendering without music",
+            track, music_service.MUSIC_DIR,
+        )
+        return None, volume, duck
+    return str(resolved), volume, duck
 
 
 def _hex_to_ass(hex_color: str, default: str = "&H00FFFFFF") -> str:
@@ -154,12 +195,9 @@ class RenderService:
         print(f"DEBUG render_clip: vf={vf}", flush=True)
 
         template_config = template.config if template else {}
-        music_path = template_config.get("background_music") if template_config else None
-        music_volume = (
-            template_config.get("background_music_volume", AUDIO_MUSIC_VOLUME)
-            if template_config else AUDIO_MUSIC_VOLUME
-        )
-        duck_enabled = (template_config.get("background_music_duck", True) if template_config else True)
+        # Phase 3.6 - bgm_track (filename in MUSIC_DIR) replaces the old
+        # background_music path. Legacy keys still resolve for old templates.
+        music_path, music_volume, duck_enabled = resolve_bgm_settings(template_config)
         audio_filter, extra_audio_inputs = build_audio_filter(
             sfx_events=sfx_files,
             music_path=music_path,

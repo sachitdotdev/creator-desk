@@ -2,16 +2,19 @@ import asyncio
 import contextlib
 import glob
 import json
+import mimetypes
 import os
 import shutil
 import traceback
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models
 from app.database import SessionLocal, get_db
+from app.services import music_service
 from app.services.llm_service import LLMService
 from app.services.qc_bot import audit_clip
 from app.services.render_service import RenderService
@@ -243,6 +246,30 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
     db.delete(template)
     db.commit()
     return {"status": "success", "message": "Template deleted"}
+
+
+# Phase 3.6 - BGM library. Tracks are plain files in MUSIC_DIR; metadata lives
+# in optional <filename>.json sidecars, so there is no database table to manage.
+@router.get("/music")
+def list_music():
+    return music_service.list_tracks()
+
+
+@router.post("/music", status_code=201)
+def upload_music(file: UploadFile = File(...)):
+    try:
+        return music_service.save_upload(file.filename, file.file)
+    except music_service.MusicError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/music/{name}/preview")
+def preview_music(name: str):
+    path = music_service.resolve_track(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @router.post("/templates/seed")

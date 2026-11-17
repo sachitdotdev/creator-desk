@@ -53,3 +53,9 @@ GOAL.txt
 .openhands/
 frontend/dist/
 dist/
+
+# BGM library: user-supplied tracks only, never bundled with the repo
+backend/assets/music/*.mp3
+backend/assets/music/*.wav
+backend/assets/music/*.m4a
+backend/assets/music/*.ogg
