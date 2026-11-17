@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # Lightweight test dependencies only. Never install torch, torchvision,
+      # CUDA wheels or ultralytics here — they are multi-GB and the suite must
+      # stay importable without them (heavy imports are lazy/optional).
+      - name: Install test dependencies
+        run: |
+          uv venv --python 3.12
+          uv pip install \
+            pytest \
+            ruff \
+            fastapi \
+            httpx \
+            sqlalchemy \
+            pydantic \
+            python-dotenv \
+            python-multipart \
+            numpy \
+            openai
+
+      - name: Assert heavy ML packages are absent
+        run: |
+          uv run python -c "import importlib.util as u, sys; heavy=[m for m in ('torch','torchvision','ultralytics') if u.find_spec(m)]; sys.exit(f'heavy deps installed: {heavy}' if heavy else 0)"
+
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Run tests
+        run: uv run python -m pytest tests -q

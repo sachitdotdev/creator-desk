@@ -65,6 +65,8 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ### Tests & tooling
 - `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates)
 - `backend/ruff.toml`       — ruff config (FastAPI `Depends` allowed in defaults)
+- `.github/workflows/ci.yml` — CI job `backend` (ruff + pytest on Python 3.12, lightweight deps only)
+- `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
 
 ### Host-side scripts (run outside the app)
 - `start.bat`, `start.ps1`  — one-click launchers (venv + backend + frontend; host-absolute paths)
@@ -99,7 +101,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
   `python -m uvicorn app.main:app --reload --port 8080` → `http://localhost:8080`
   (`start.bat` creates the venv with Python 3.12/3.11, installs
   `requirements.txt`, and starts both apps). `start.ps1` and the Vite proxy
-  still reference port 8000 — stale.
+  also use port 8080.
 - **Frontend:** `cd frontend && npm run dev` (Vite on `http://localhost:5173`).
   `npm run build` = `tsc && vite build`.
 - **Tests:** from `backend/`, `python -m pytest tests -q` and `ruff check .`.
@@ -161,5 +163,9 @@ Before declaring a task complete:
 3. For route changes: verify with `curl` or the FastAPI test client.
 4. Update the Project Map here if files were added or moved.
 
-No CI workflow is checked in yet; when one is added it must run these same
-checks on every PR.
+CI (`.github/workflows/ci.yml`) runs `ruff check .` and `python -m pytest tests -q`
+on Python 3.12 for every pull request and every push to `main`. CI installs only
+lightweight test dependencies (pytest, fastapi, httpx, sqlalchemy, pydantic,
+python-dotenv, python-multipart, numpy, openai) plus apt `ffmpeg` — it never
+installs torch, torchvision, CUDA wheels or ultralytics. The CI job named
+`backend` must pass before merging.
