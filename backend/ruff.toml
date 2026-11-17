@@ -1,0 +1,16 @@
+﻿[lint.flake8-bugbear]
+# FastAPI dependency markers are semantically immutable: they are meant to live
+# in the argument default (`db: Session = Depends(get_db)`). Allow them so B008
+# never forces a route signature rewrite.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+    "fastapi.Security",
+    "app.database.get_db",
+]

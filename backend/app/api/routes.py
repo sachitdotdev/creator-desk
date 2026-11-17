@@ -6,7 +6,6 @@ import os
 import shutil
 import traceback
 from pathlib import Path
-from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -24,15 +23,15 @@ router = APIRouter()
 
 
 @router.get("/videos")
-def get_videos(db: Annotated[Session, Depends(get_db)]):
+def get_videos(db: Session = Depends(get_db)):
     return db.query(models.Video).filter(
         models.Video.status.notin_(["processing", "rendering"])
     ).all()
 
 @router.post("/videos/upload", response_model=int)
 def upload_video(
-    file: Annotated[UploadFile, File()],
-    db: Annotated[Session, Depends(get_db)],
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
     os.makedirs(SOURCES_DIR, exist_ok=True)
     print(f"RECEIVED UPLOAD: {file.filename}", flush=True)
@@ -100,7 +99,11 @@ async def _run_pipeline(video_id: str):
         transcript_dir = Path(str(TRANSCRIPTS_DIR))
         transcript_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = transcript_dir / f"video_{video.id}_transcript.json"
-        await asyncio.to_thread(transcript_path.write_text, json.dumps(whisper_result, indent=2))
+        await asyncio.to_thread(
+            transcript_path.write_text,
+            json.dumps(whisper_result, indent=2),
+            encoding="utf-8",
+        )
         video.transcript_path = str(transcript_path)
         db.add(video)
         db.commit()
@@ -195,15 +198,15 @@ async def _run_pipeline(video_id: str):
         db.close()
 
 @router.get("/videos/{video_id}/clips")
-def get_clips(video_id: str, db: Annotated[Session, Depends(get_db)]): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+def get_clips(video_id: str, db: Session = Depends(get_db)): return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
 
 @router.get("/templates")
-def get_templates(db: Annotated[Session, Depends(get_db)]):
+def get_templates(db: Session = Depends(get_db)):
     return db.query(models.Template).all()
 
 
 @router.post("/templates")
-def create_template(data: dict, db: Annotated[Session, Depends(get_db)]):
+def create_template(data: dict, db: Session = Depends(get_db)):
     new_template = models.Template(
         name=data.get("name", "Untitled Template"),
         description=data.get("description", ""),
@@ -218,7 +221,7 @@ def create_template(data: dict, db: Annotated[Session, Depends(get_db)]):
 
 
 @router.put("/templates/{template_id}")
-def update_template(template_id: int, data: dict, db: Annotated[Session, Depends(get_db)]):
+def update_template(template_id: int, data: dict, db: Session = Depends(get_db)):
     template = db.query(models.Template).filter(models.Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -233,7 +236,7 @@ def update_template(template_id: int, data: dict, db: Annotated[Session, Depends
 
 
 @router.delete("/templates/{template_id}")
-def delete_template(template_id: int, db: Annotated[Session, Depends(get_db)]):
+def delete_template(template_id: int, db: Session = Depends(get_db)):
     template = db.query(models.Template).filter(models.Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -243,7 +246,7 @@ def delete_template(template_id: int, db: Annotated[Session, Depends(get_db)]):
 
 
 @router.post("/templates/seed")
-def seed_default_templates(db: Annotated[Session, Depends(get_db)]):
+def seed_default_templates(db: Session = Depends(get_db)):
     try:
         import seed_templates
         seed_templates.seed()
@@ -253,9 +256,9 @@ def seed_default_templates(db: Annotated[Session, Depends(get_db)]):
 
 @router.get("/clips")
 def get_all_clips(
-    db: Annotated[Session, Depends(get_db)],
     video_id: int | None = None,
     videoId: str | None = None,
+    db: Session = Depends(get_db),
 ):
     vid = video_id or videoId
     if vid:
@@ -276,7 +279,7 @@ def get_trending_sources():
     ]
 
 @router.delete("/clips/{clip_id}")
-def delete_clip(clip_id: int, db: Annotated[Session, Depends(get_db)]):
+def delete_clip(clip_id: int, db: Session = Depends(get_db)):
     clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -289,7 +292,7 @@ def delete_clip(clip_id: int, db: Annotated[Session, Depends(get_db)]):
     return {"message": "Clip deleted"}
 
 @router.post("/clips/{clip_id}/render")
-def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Annotated[Session, Depends(get_db)]):
+def render_clip(clip_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")

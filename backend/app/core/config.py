@@ -34,6 +34,7 @@ if not os.environ.get("FFMPEG_PATH") and not shutil.which("ffmpeg"):
 from app.core.paths import (
     DATA_DIR,
     DB_PATH,
+    FACE_MODEL,  # noqa: F401 - re-exported for app.services.face_tracker
     MODELS_DIR,
     MUSIC_DIR,
     PROCESSED_DIR,
