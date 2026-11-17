@@ -58,6 +58,27 @@ def _coerce_music_volume(value: Any, default: float = AUDIO_MUSIC_VOLUME) -> flo
     return min(max(volume, 0.0), 1.0)
 
 
+def _effective_loudness_target_tp() -> float:
+    """Return the true-peak target after headroom, clamped to FFmpeg's range.
+
+    ``loudnorm`` only accepts TP in [-9.0, 0.0]. A misconfigured
+    ``LOUDNESS_TARGET_TP`` / ``LOUDNESS_TP_HEADROOM`` pair must not produce an
+    invalid filter value and fail the final normalization pass.
+    """
+    effective = LOUDNESS_TARGET_TP - LOUDNESS_TP_HEADROOM
+    clamped = min(max(effective, -9.0), 0.0)
+    if clamped != effective:
+        log.warning(
+            "Effective loudnorm true-peak target %.2f is outside [-9.0, 0.0]; "
+            "clamping to %.2f (LOUDNESS_TARGET_TP=%s, LOUDNESS_TP_HEADROOM=%s)",
+            effective,
+            clamped,
+            LOUDNESS_TARGET_TP,
+            LOUDNESS_TP_HEADROOM,
+        )
+    return clamped
+
+
 def resolve_bgm_settings(template_config: dict | None) -> tuple[str | None, float, bool]:
     """Resolve a template's BGM settings to (absolute path, volume, duck).
 
@@ -255,7 +276,7 @@ class RenderService:
                     str(output_path),
                     str(normalized_path),
                     target_i=LOUDNESS_TARGET_I,
-                    target_tp=LOUDNESS_TARGET_TP - LOUDNESS_TP_HEADROOM,
+                    target_tp=_effective_loudness_target_tp(),
                     target_lra=LOUDNESS_TARGET_LRA,
                 )
                 if loudness_stats is not None:
