@@ -37,6 +37,7 @@ FACE_MODEL    = Path(os.environ.get("FACE_MODEL_PATH") or str(_BACKEND_ANCHOR / 
 # Central scratch root for CPU-only work (e.g. Whisper's FFmpeg audio chunks).
 # Created on demand by the caller; overridable without changing the data root.
 TEMP_DIR      = Path(os.environ.get("CREATOR_DESK_TEMP_DIR", str(DATA_DIR / "tmp")))
+CUT_CACHE_DIR = TEMP_DIR / "cut_cache"      # cached ffmpeg cut times per source/clip
 
 TRANSCRIPTS_DIR = DATA_DIR / "creators"
 TEMPLATES_DIR   = DATA_DIR / "templates"

@@ -32,6 +32,7 @@ if not os.environ.get("FFMPEG_PATH") and not shutil.which("ffmpeg"):
 
 # Import paths from core.paths
 from app.core.paths import (
+    CUT_CACHE_DIR,
     DATA_DIR,
     DB_PATH,
     FACE_MODEL,  # noqa: F401 - re-exported for app.services.face_tracker
@@ -41,7 +42,6 @@ from app.core.paths import (
     RENDERS_DIR,
     SFX_DIR,
     SOURCES_DIR,
-    TEMP_DIR,
     TEMPLATES_DIR,
     TRANSCRIPTS_DIR,
 )
@@ -162,7 +162,7 @@ FACE_DETECTION_STRIDE = int(os.getenv("FACE_DETECTION_STRIDE", "1"))
 # x position into the next. Cuts are detected with ffmpeg scene detection and
 # cached so re-renders don't re-scan the source.
 FACE_CUT_THRESHOLD = float(os.getenv("FACE_CUT_THRESHOLD", "0.3"))      # ffmpeg scene detection threshold
-FACE_CUT_CACHE_DIR = TEMP_DIR / "cut_cache"                             # cached cut times per source/clip
+FACE_CUT_CACHE_DIR = CUT_CACHE_DIR                                      # cached cut times per source/clip
 
 # Target selection: with several faces and no speaker info yet, prefer the
 # largest face and require it to persist MIN_DWELL seconds before switching
