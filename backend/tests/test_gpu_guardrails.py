@@ -380,7 +380,9 @@ def test_whisper_transcribe_flushes_vram_when_inference_raises(monkeypatch, tmp_
     )
     with pytest.raises(RuntimeError, match="transcribe failed"):
         service.transcribe("in.wav")
-    assert flushed == ["whisper:transcribe"]
+    # The whole-transcription lock also releases the model and flushes in its
+    # own finally, after the per-chunk flush.
+    assert flushed == ["whisper:transcribe", "whisper:unload", "whisper:transcribe"]
 
 
 def test_whisper_alignment_flushes_vram_when_alignment_raises(monkeypatch, tmp_path):
@@ -402,7 +404,12 @@ def test_whisper_alignment_flushes_vram_when_alignment_raises(monkeypatch, tmp_p
     )
     with pytest.raises(RuntimeError, match="alignment failed"):
         service.transcribe("in.wav")
-    assert flushed == ["whisper:transcribe", "whisper:alignment"]
+    assert flushed == [
+        "whisper:transcribe",
+        "whisper:alignment",
+        "whisper:unload",
+        "whisper:transcribe",
+    ]
 
 
 def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
@@ -433,3 +440,206 @@ def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
     assert result is False
     assert flushed == ["face-tracker:yolo"]
     assert sendcmd.read_text(encoding="utf-8").strip() == "0.000 overlay x -420.0;"
+
+
+def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_path):
+    """Two transcriptions must never each hold a CUDA model at the same time."""
+    import tempfile
+    from pathlib import Path
+
+    from app.services import whisper_service
+
+    events: list[str] = []
+    events_lock = threading.Lock()
+
+    def record(msg: str) -> None:
+        with events_lock:
+            events.append(msg)
+
+    made_dirs: list[Path] = []
+
+    def make_temp_dir() -> str:
+        d = tmp_path / f"chunks_{len(made_dirs)}"
+        d.mkdir()
+        made_dirs.append(d)
+        return str(d)
+
+    def fake_ffmpeg(cmd, *args, **kwargs) -> None:
+        Path(cmd[-1].replace("%03d", "000")).write_bytes(b"fake")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", make_temp_dir)
+    monkeypatch.setattr(whisper_service.subprocess, "run", fake_ffmpeg)
+
+    class FakeBatched:
+        def __init__(self, model):
+            self.model = model
+
+        def transcribe(self, *args, **kwargs):
+            segment = types.SimpleNamespace(start=0.0, end=1.0, text="hello")
+            return ([segment], types.SimpleNamespace(duration=1.0))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        types.SimpleNamespace(BatchedInferencePipeline=FakeBatched),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "whisperx",
+        types.SimpleNamespace(
+            load_align_model=lambda **k: (None, None),
+            align=lambda *a, **k: {"segments": []},
+        ),
+    )
+    monkeypatch.setattr(
+        whisper_service, "flush_vram", lambda stage: record(f"flush:{stage}")
+    )
+
+    first_loading = threading.Event()
+
+    def make_load(name: str, delay: float, started=None):
+        def fake():
+            record(f"{name}:load-start")
+            if started is not None:
+                started.set()
+            time.sleep(delay)
+            record(f"{name}:load-end")
+            return object()
+
+        return fake
+
+    def make_unload(name: str):
+        def fake():
+            record(f"{name}:released")
+
+        return fake
+
+    first = whisper_service.WhisperService()
+    second = whisper_service.WhisperService()
+    monkeypatch.setattr(first, "_load_model", make_load("first", 0.10, first_loading))
+    monkeypatch.setattr(second, "_load_model", make_load("second", 0))
+    monkeypatch.setattr(first, "unload_model", make_unload("first"))
+    monkeypatch.setattr(second, "unload_model", make_unload("second"))
+
+    t1 = threading.Thread(target=first.transcribe, args=("in.wav",), name="first")
+    t2 = threading.Thread(target=second.transcribe, args=("in.wav",), name="second")
+    t1.start()
+    assert first_loading.wait(timeout=5)
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert events[0] == "first:load-start"
+    # Everything the first transcription does - including its final release and
+    # VRAM flush - happens before the second one even starts loading a model.
+    second_load = events.index("second:load-start")
+    first_run = events[:second_load]
+    assert "first:load-end" in first_run
+    assert "first:released" in first_run
+    assert "flush:whisper:transcribe" in first_run
+    assert not any(e.startswith("second:") for e in first_run)
+
+
+def test_qc_audit_runs_off_the_event_loop(monkeypatch, tmp_path):
+    """QC's ffprobe subprocess may not block the ASGI event loop."""
+    from app.api import routes
+
+    main_thread = threading.get_ident()
+    qc_threads: list[int] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_audit(output_path, min_dur, expected_crop_x=False):
+        qc_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(timeout=5)
+        return True, "ok"
+
+    class FakeTemplate:
+        id = 1
+        name = "default"
+        layout = "split_screen"
+        is_default = True
+
+    class FakeVideo:
+        id = 1
+        path = str(tmp_path / "in.mp4")
+        status = "uploaded"
+        transcript_path = None
+        error_message = None
+
+    class FakeClip:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.id = 99
+            self.output_path = "/renders/out.mp4"
+            self.file_path = None
+            self.status = "pending"
+            self.error_message = None
+
+    class FakeQuery:
+        def __init__(self, result):
+            self.result = result
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self.result
+
+    class FakeSession:
+        def query(self, model):
+            if model is routes.models.Template:
+                return FakeQuery(FakeTemplate())
+            if model is routes.models.Video:
+                return FakeQuery(FakeVideo())
+            return FakeQuery(None)
+
+        def add(self, obj):
+            pass
+
+        def commit(self):
+            pass
+
+        def refresh(self, obj):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeWhisper:
+        def transcribe(self, path):
+            return []
+
+    class FakeLLM:
+        async def generate_clips(self, **kwargs):
+            return [{"start": 0.0, "end": 1.0, "text": "hi"}]
+
+    (tmp_path / "in.mp4").write_bytes(b"fake")
+    monkeypatch.setattr(routes, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(routes.models, "Clip", FakeClip)
+    monkeypatch.setattr(routes, "WhisperService", FakeWhisper)
+    monkeypatch.setattr(routes, "LLMService", FakeLLM)
+    monkeypatch.setattr(routes, "audit_clip", fake_audit)
+    monkeypatch.setattr(
+        routes, "_render_clip_in_thread", lambda *a, **k: "/renders/out.mp4"
+    )
+    monkeypatch.setattr(routes, "TRANSCRIPTS_DIR", tmp_path / "transcripts")
+    monkeypatch.setattr(routes, "PROCESSED_DIR", tmp_path / "processed")
+
+    async def scenario():
+        task = asyncio.create_task(routes._run_pipeline("1"))
+        # entered is a threading.Event set from the QC worker; waiting on it
+        # directly would block the loop we are trying to prove is responsive.
+        await asyncio.to_thread(entered.wait, 5)
+        assert entered.is_set()
+        # The loop must keep making progress while QC is blocked in its worker.
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert qc_threads and qc_threads[0] != main_thread

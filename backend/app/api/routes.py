@@ -197,7 +197,15 @@ async def _run_pipeline(video_id: str):
             if output_path:
                 min_dur = 60.0
                 try:
-                    passed, reason = audit_clip(output_path, min_dur, expected_crop_x=clip.layout == "split_screen")
+                    # QC shells out to ffprobe and can block for seconds; keep
+                    # it off the event loop so health checks and status polling
+                    # stay responsive (same rule as the render step above).
+                    passed, reason = await asyncio.to_thread(
+                        audit_clip,
+                        output_path,
+                        min_dur,
+                        expected_crop_x=clip.layout == "split_screen",
+                    )
                     if not passed:
                         print(f"DEBUG: QC failed for clip {clip.id}: {reason}", flush=True)
                         clip.status = "failed"
