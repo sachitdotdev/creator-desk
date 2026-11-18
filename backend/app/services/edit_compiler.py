@@ -5,7 +5,7 @@ import textwrap
 from pathlib import Path
 
 from app.core.config import AUDIO_SFX_VOLUME
-from app.core.paths import SFX_DIR
+from app.core.paths import RENDERS_DIR, SFX_DIR
 
 log = logging.getLogger(__name__)
 
@@ -28,14 +28,20 @@ def first_sendcmd_overlay_x(sendcmd_path: str) -> str:
     initial overlay position from this first command instead of relying on the
     sendcmd queue alone. Returns ``"0"`` when the file is missing/unparseable.
     """
-    try:
-        text = Path(sendcmd_path).read_text(encoding="utf-8")
-    except OSError:
-        return "0"
-    for line in text.splitlines():
-        match = _SENDCMD_RE.match(line)
-        if match:
-            return match.group(1)
+    # render_service passes the bare file name because FFmpeg runs with the
+    # ASS folder as its cwd; Python still runs from the repo root, so resolve
+    # bare names against RENDERS_DIR here (the single source of truth).
+    path = Path(sendcmd_path)
+    candidates = [path] if path.is_absolute() else [path, RENDERS_DIR / path.name]
+    for candidate in candidates:
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            match = _SENDCMD_RE.match(line)
+            if match:
+                return match.group(1)
     return "0"
 
 
@@ -136,7 +142,7 @@ def compile_plan(
         text_color = "white"
     
     font_size = caption_cfg.get("size", 75)
-    
+
     filters = []
     sfx_files = []
     
