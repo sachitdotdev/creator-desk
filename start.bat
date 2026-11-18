@@ -18,6 +18,12 @@ set "LLM_SCRIPT=%~dp0services\vllm\start_vllm.bat"
 set "LLM_PORT=8002"
 set "LLM_HEALTH=http://127.0.0.1:%LLM_PORT%/health"
 set "LLM_TIMEOUT=300"
+rem LLM model directory, consumed as VLLM_MODEL by services\vllm\start_vllm.bat.
+rem Set it in the gitignored launcher.env.local.bat (recommended) or export it
+rem in your shell before running this script. If left empty, start_vllm.bat
+rem falls back to its own built-in default path. No personal absolute path is
+rem committed here. The "if not defined" guard preserves an existing value.
+if not defined VLLM_MODEL set "VLLM_MODEL="
 
 set "BACKEND_PORT=8080"
 set "BACKEND_HEALTH=http://127.0.0.1:%BACKEND_PORT%/api/status"
@@ -29,6 +35,12 @@ set "FRONTEND_TIMEOUT=120"
 rem ===========================================================================
 
 set "ROOT=%~dp0"
+
+rem --- Optional gitignored local overrides (e.g. VLLM_MODEL). ---------------
+rem Copy launcher.env.local.bat.example to launcher.env.local.bat and set your
+rem own paths there; that file is never committed.
+if exist "%ROOT%launcher.env.local.bat" call "%ROOT%launcher.env.local.bat"
+
 set "BACKEND=%ROOT%backend"
 set "FRONTEND=%ROOT%frontend"
 set "LOG_DIR=%ROOT%logs"

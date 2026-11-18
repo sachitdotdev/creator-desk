@@ -71,3 +71,6 @@ backend/assets/sfx/*.[fF][lL][aA][cC]
 # One-click launcher runtime: per-service logs and tracked PIDs.
 logs/
 .run/
+
+# Local launcher overrides (e.g. VLLM_MODEL); never commit personal paths.
+launcher.env.local.bat
