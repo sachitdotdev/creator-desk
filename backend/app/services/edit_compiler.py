@@ -156,13 +156,16 @@ def compile_plan(
         # the filtergraph seeds the initial overlay x from the first sendcmd
         # position because sendcmd does not reliably apply a t=0 command to frame 0.
         initial_overlay_x = first_sendcmd_overlay_x(sendcmd_path)
-        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack]"
+        # The overlay main is the full scaled source (3413x1920 for a 1920x1080
+        # input), so crop back down to the 1080x1920 vertical frame here. The
+        # old colour-source main produced the right size but a black first frame.
+        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0[out_v]"
     else:
         base = "[0:v]split=2[v1][v2];[v1]crop=iw:ih/2:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[v2]crop=iw:ih/2:0:ih/2,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vstack]"
     
     filters.append(base)
     
-    current_video = "[vstack]"
+    current_video = "[out_v]" if layout == "center_crop" else "[vstack]"
     if operations:
         for i, op in enumerate(operations):
             if not isinstance(op, dict):
@@ -238,9 +241,6 @@ def compile_plan(
                 )
     
     # 3. Burn ASS Captions
-    if current_video == "[vstack]":
-        filters.append(f"[vstack]ass='{ass_filename}'[out_final]")
-    else:
-        filters.append(f"{current_video}ass='{ass_filename}'[out_final]")
+    filters.append(f"{current_video}ass='{ass_filename}'[out_final]")
     
     return ";".join(filters), sfx_files

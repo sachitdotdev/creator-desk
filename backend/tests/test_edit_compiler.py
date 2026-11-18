@@ -71,6 +71,9 @@ def test_first_sendcmd_overlay_x_resolves_bare_name_in_renders_dir(monkeypatch, 
         sendcmd_path="crop_2.txt",
     )
     assert "overlay=x=-981.32:y=0" in vf
+    # The video-as-overlay-main graph must crop the full scaled frame back to
+    # the vertical output size before the captions are burned in.
+    assert "[vstack]crop=1080:1920:0:0[out_v];[out_v]ass=" in vf
 
 
 def test_compile_plan_truncates_llm_hook_text_before_filter_build():
