@@ -61,6 +61,13 @@ backend/assets/music/*.[wW][aA][vV]
 backend/assets/music/*.[mM]4[aA]
 backend/assets/music/*.[oO][gG][gG]
 
+# Exception: lofi.mp3 is the CC0 open-lofi track "Moon Over Red Dunes" (see docs/ASSETS.md).
+!backend/assets/music/lofi.mp3
+
+# Exception: one original, generated placeholder BGM IS committed on purpose.
+# Regenerate it with tools/generate_sfx.py; license is in its .json sidecar.
+!backend/assets/music/ambient-pad.mp3
+
 # Generated test SFX (case-insensitive); sidecar .json stays tracked.
 backend/assets/sfx/*.[wW][aA][vV]
 backend/assets/sfx/*.[mM][pP]3

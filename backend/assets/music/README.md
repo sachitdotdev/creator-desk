@@ -1,8 +1,10 @@
 # Background music library
 
-Creator Desk does **not** bundle any music. Only add tracks that you own or that
-are licensed for your use (royalty-free / Creative Commons with attribution as
-required). Do not commit copyrighted music to this repository.
+Creator Desk bundles exactly one original, generated placeholder track
+(`ambient-pad.mp3`, see `docs/ASSETS.md`). Otherwise, only add tracks that you
+own or that are licensed for your use (royalty-free / Creative Commons with
+attribution as required). Do not commit copyrighted or AI-vocal music to this
+repository.
 
 Drop supported files directly in this folder:
 
@@ -11,7 +13,9 @@ Drop supported files directly in this folder:
 - `.m4a`
 - `.ogg`
 
-Audio files in this folder are git-ignored; this README is the only tracked file.
+Audio files in this folder are git-ignored, except for the explicitly un-ignored
+original placeholder `ambient-pad.mp3` and its sidecar. See `docs/ASSETS.md` for
+the full licensing policy and provenance of every committed audio file.
 
 ## Metadata (required for every track)
 
