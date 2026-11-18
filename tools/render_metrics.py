@@ -100,6 +100,9 @@ REVERSAL_WINDOW_SECONDS = 2.0
 # seconds to count as a sweep (pan onto empty space).
 FAST_SWEEP_PX_PER_S = 400.0
 FAST_SWEEP_MIN_SECONDS = 0.5
+# Caption safe-zone threshold: caption bottom margin must stay above this
+# fraction of frame height to be considered safe.
+SAFE_ZONE_BOTTOM_PCT = 0.18
 # Face-in-crop: how much slack (source px) the chosen target's bbox center may
 # sit inside the crop window before it is flagged. Violations are samples whose
 # chosen bbox center lies outside the crop window or touches/within the margin
@@ -471,6 +474,26 @@ def caption_metrics(dialogues: list[dict]) -> dict:
         "avg_words_per_caption": round(total_words / n, 2) if n else 0.0,
         "caption_change_times": sorted(d["start"] for d in dialogues),
     }
+
+
+def first_frame_luma(ffmpeg: str, render_path: str, *, n_frames: int = 5, timeout: int = 120) -> list[float]:
+    """Mean luma (YAVG) of the first ``n_frames`` via ffmpeg signalstats.
+
+    Complements blackdetect: a single black frame at t=0 can hide behind
+    blackdetect's minimum-duration threshold, but shows up here as YAVG ~16
+    while the following frames sit around ~80.
+    """
+    import subprocess
+
+    select = f"select='lt(n\\,{max(1, n_frames)})',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-"
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "info", "-i", str(render_path),
+           "-vf", select, "-an", "-f", "null", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [float(line.split("=", 1)[1]) for line in (proc.stdout or "").splitlines()
+            if line.startswith("lavfi.signalstats.YAVG=")]
 
 
 def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120, min_duration: float = 0.04, pix_th: float = 0.10) -> list[dict]:

@@ -180,3 +180,10 @@ FACE_HOLD_SECONDS = float(os.getenv("FACE_HOLD_SECONDS", "1.0"))
 print(f"DEBUG CONFIG: DATA_DIR={DATA_DIR}")
 print(f"DEBUG CONFIG: SOURCES_DIR={SOURCES_DIR}")
 print(f"DEBUG CONFIG: TRANSCRIPTS_DIR={TRANSCRIPTS_DIR}")
+
+# Caption safe zone (bottom margin clamp). The caption bottom margin (ASS
+# MarginV) is expressed as a fraction of the frame height; when a template's
+# margin is below CAPTION_SAFE_BOTTOM_PCT the render-time clamp raises it to
+# that safe value (toggle with CAPTION_SAFE_ZONE_ENFORCE, default on).
+CAPTION_SAFE_BOTTOM_PCT = float(os.getenv("CAPTION_SAFE_BOTTOM_PCT", "0.18"))
+CAPTION_SAFE_ZONE_ENFORCE = os.getenv("CAPTION_SAFE_ZONE_ENFORCE", "true").strip().lower() in ("1", "true", "yes", "on")

@@ -30,10 +30,12 @@ import subprocess
 from pathlib import Path
 
 from render_metrics import (
+    SAFE_ZONE_BOTTOM_PCT,
     TARGET_WIDTH,
     blackdetect_periods,
     caption_metrics,
     compute_crop_metrics,
+    first_frame_luma,
     parse_sendcmd,
 )
 
@@ -261,7 +263,16 @@ def black_frame_report(render: Path) -> dict:
     """Run ffmpeg blackdetect on the render and flag a black first frame."""
     periods = blackdetect_periods(_ffmpeg(), str(render))
     black_first_frame = any(p["black_start"] < 0.5 for p in periods)
-    return {"periods": periods, "black_first_frame": black_first_frame}
+    luma = first_frame_luma(_ffmpeg(), str(render))
+    # YAVG ~16 is an all-black frame; normal content sits well above 20.
+    black_frames = [i for i, value in enumerate(luma) if value < 20.0]
+    return {
+        "periods": periods,
+        "black_first_frame": black_first_frame,
+        "first_5_luma": [round(v, 2) for v in luma],
+        "black_frame_count": len(black_frames),
+        "black_frame_indices": black_frames,
+    }
 
 
 def caption_safe_zone(
@@ -270,8 +281,9 @@ def caption_safe_zone(
     """Report the closest caption bottom margin as % of frame height.
 
     ASS alignment 2 is bottom-center; ``margin_v`` is the distance from the
-    bottom edge. Text inside the bottom 15% of the frame (margin_v < 15% of
-    height) is flagged as a safe-zone violation. A per-dialogue margin of 0 is
+    bottom edge. The safe-zone threshold is ``SAFE_ZONE_BOTTOM_PCT`` (default
+    0.18 => 18% of frame height); text inside the bottom ``SAFE_ZONE_BOTTOM_PCT``
+    of the frame is flagged as a safe-zone violation. A per-dialogue margin of 0 is
     treated as "inherit from style", so ``style_margin_v`` is used as fallback.
     """
     result = {
@@ -295,7 +307,7 @@ def caption_safe_zone(
     result["bottom_margin_px"] = round(closest, 1)
     result["bottom_margin_pct"] = round(pct, 2)
     result["margin_source"] = source
-    result["safe_zone_violation"] = pct < 15.0
+    result["safe_zone_violation"] = pct < SAFE_ZONE_BOTTOM_PCT * 100.0
     return result
 
 
@@ -469,7 +481,8 @@ def main() -> None:
     else:
         print(f"face tracking : unavailable ({ft.get('reason')})")
     bd = metrics["black_detect"]
-    print(f"black detect  : {len(bd['periods'])} period(s), black first frame: {bd['black_first_frame']}")
+    print(f"black detect  : {len(bd['periods'])} period(s), black first frame: {bd['black_first_frame']}, "
+          f"black frames in first 5: {bd['black_frame_count']} {bd['black_frame_indices']} (YAVG {bd['first_5_luma']})")
     sz = metrics["caption_safe_zone"]
     print(f"caption safe zone: bottom margin {sz['bottom_margin_pct']}% of height ({sz.get('margin_source')}), violation: {sz['safe_zone_violation']}")
     mf = metrics["missed_frames"]
