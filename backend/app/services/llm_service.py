@@ -97,11 +97,16 @@ class LLMService:
         custom_prompt: str | None = None,
     ) -> list[dict[str, Any]]:
         
-        transcript_text = "\n".join(
+        full_transcript_text = "\n".join(
             f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text']}"
             for s in transcript_segments
         )
-        transcript_text = transcript_text[:4000]
+        # DIAGNOSTIC: the pipeline hard-caps the transcript at 4000 chars before
+        # it reaches vLLM. estimate ~= chars/4; max-model-len is 4096.
+        transcript_token_estimate = len(full_transcript_text) // 4
+        transcript_text = full_transcript_text[:4000]
+        tokens_sent = len(transcript_text) // 4
+        was_truncated = len(transcript_text) < len(full_transcript_text)
 
         user_prompt = f"TRANSCRIPT:\n{transcript_text}\n\nTARGET: Select exactly {num_clips} best short clips. Return ONLY valid JSON."
 
@@ -152,12 +157,41 @@ class LLMService:
                     "layout": c.get("layout", "center_crop"),
                     "operations": ops
                 })
+            self._log_clip_selection(
+                transcript_token_estimate, tokens_sent, was_truncated, False, normalized
+            )
             return normalized
             
         except Exception as exc:  # noqa: BLE001 - LLM failure falls back to clip heuristics
             print(f"LLM CRASHED - FALLING BACK: {exc}", flush=True)
             traceback.print_exc()
-            return self._generate_fallback_clips(transcript_segments, num_clips, vibe)
+            fallback = self._generate_fallback_clips(transcript_segments, num_clips, vibe)
+            self._log_clip_selection(
+                transcript_token_estimate, tokens_sent, was_truncated, True, fallback
+            )
+            return fallback
+
+    @staticmethod
+    def _log_clip_selection(
+        transcript_token_estimate: int,
+        tokens_sent: int,
+        was_truncated: bool,
+        used_fallback: bool,
+        clips: list[dict[str, Any]],
+    ) -> None:
+        """Log-only diagnostic for why a 1-hour video yields clips from one short window.
+
+        Emits one line with: token estimate of the full transcript, tokens actually
+        sent to vLLM, whether the 4000-char cap truncated it, whether the heuristic
+        fallback produced the clips, and the selected clip (start, end) times.
+        """
+        times = ", ".join(f"({c.get('start', 0):.1f},{c.get('end', 60):.1f})" for c in clips)
+        print(
+            f"[CLIP-SELECT] transcript_tokens_est={transcript_token_estimate} "
+            f"tokens_sent={tokens_sent} truncated={was_truncated} "
+            f"fallback={used_fallback} n_clips={len(clips)} times=[{times}]",
+            flush=True,
+        )
 
     @staticmethod
     def _generate_fallback_clips(transcript_segments: list[dict], num_clips: int, vibe: str) -> list[dict[str, Any]]:

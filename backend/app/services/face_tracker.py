@@ -5,7 +5,10 @@ from app.core.gpu_lock import gpu_lock
 from app.core.processing_utils import flush_vram
 
 
-def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080) -> bool:
+def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080, debug: bool = False) -> bool:
+    # DIAGNOSTIC ONLY: opt in with debug=True or FACE_TRACKER_DEBUG=1. When off
+    # (the default) this function's output and control flow are unchanged.
+    debug_enabled = debug or os.environ.get("FACE_TRACKER_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
     try:
         import cv2  # heavy, optional dependency: keep the module importable without it
 
@@ -46,18 +49,45 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
                         results = model(frame, verbose=False, device="cuda")
                         current_x = None
                         max_area = 0
+                        face_count = 0
+                        chosen_idx = -1
+                        chosen_bbox = None
+                        chosen_conf = 0.0
 
                         for r in results:
                             for box in r.boxes:
+                                face_count += 1
                                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                                 area = (x2 - x1) * (y2 - y1)
                                 if area > max_area:
                                     max_area = area
                                     current_x = x1 + (x2 - x1) / 2
+                                    chosen_idx = face_count - 1
+                                    chosen_bbox = (x1, y1, x2, y2)
+                                    if debug_enabled:
+                                        chosen_conf = float(box.conf[0].item()) if box.conf is not None else 0.0
 
                         if current_x is not None:
                             if smoothed_x is None: smoothed_x = current_x
                             else: smoothed_x = (alpha * current_x) + ((1 - alpha) * smoothed_x)
+
+                        if debug_enabled:
+                            prefix = f"[FACE-DEBUG] frame={frame_count} t={frame_count / fps:.2f}s faces={face_count}"
+                            if chosen_bbox is None:
+                                print(f"{prefix} chosen=NONE crop_center_x={smoothed_x}", flush=True)
+                            else:
+                                bbox_str = "(" + ",".join(f"{v:.1f}" for v in chosen_bbox) + ")"
+                                half = (target_width / scale_factor) / 2.0
+                                window_str = (
+                                    "None" if smoothed_x is None
+                                    else f"[{smoothed_x - half:.1f},{smoothed_x + half:.1f}]"
+                                )
+                                print(
+                                    f"{prefix} chosen={chosen_idx} bbox={bbox_str} "
+                                    f"conf={chosen_conf:.3f} crop_center_x={smoothed_x} "
+                                    f"crop_window={window_str}",
+                                    flush=True,
+                                )
 
                         if smoothed_x is not None:
                             sampled_positions.append((frame_count, smoothed_x))

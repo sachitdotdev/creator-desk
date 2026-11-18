@@ -24,6 +24,9 @@ data/
 # Video data and renders
 data/
 
+# Render review artifacts (contact sheets, metrics, debug overlays)
+data/reviews/
+
 # Debugging junk
 _edit.py
 fix_llm.py
