@@ -21,6 +21,13 @@ original source pixels) is recovered with::
 If the source height is unknown, ``scale_factor`` defaults to 1.0 and
 ``crop_center_x`` is reported in raw overlay pixels (documented in metrics.json).
 
+The tracker also writes a sidecar per-frame detection record to
+``crop_<clip_id>.track.json`` (one JSON object per frame, see
+``app.services.face_tracker``)::
+
+    {"time": 0.033, "frame": 1, "detected": true, "conf": 0.82,
+     "bbox": [900.0, 400.0, 1080.0, 580.0], "crop_center_x": 990.0}
+
 Metrics definitions
 -------------------
 * ``jumps``            - consecutive samples whose |delta crop_center_x| exceeds
@@ -30,20 +37,41 @@ Metrics definitions
   the tracker jumping to a different face. Counted as a subset of jumps.
 * ``longest_hold``     - longest run of consecutive samples with |delta| <=
   ``hold_epsilon_px`` (default 2 px), reported in frames and seconds.
-* ``no_detection``     - HEURISTIC: sendcmd data has no detection flag, so a
-  "no detection" frame is approximated as one inside a flat run of at least
-  ``min_flat_run`` consecutive samples (default 10 ~= 0.33 s at 30 fps). A held
-  last-known position is exactly what the tracker emits when no face is found.
+* ``no_detection``     - frames where the tracker found no face. When the
+  tracker sidecar is available this is exact (sampled frames with
+  ``detected == false``); otherwise it is the HEURISTIC approximation used
+  before: a flat run of at least ``min_flat_run`` consecutive samples
+  (default 10 ~= 0.33 s at 30 fps). A held last-known position is exactly what
+  the tracker emits when no face is found.
+* ``travel_per_1s_window_px`` - the greatest sum of |delta crop_center_x|
+  observed inside any rolling 1-second window. Captures fast, sustained pans
+  that stay under the per-frame jump threshold but still swing the crop across
+  the frame.
+* ``direction_reversals`` - count of direction reversals (a pan one way then
+  back the other) whose amplitude exceeds ``reversal_threshold_px`` (default
+  100 px) and which unfold inside ``reversal_window_seconds`` (default 2 s).
+  Measures "ping-pong" / wrong-target flipping between faces.
+* ``fast_sweeps`` - count of sustained, unidirectional sweeps where the crop
+  speed stays above ``fast_sweep_px_per_s`` (default 400 px/s) for at least
+  ``fast_sweep_min_seconds`` (default 0.5 s). Measures uncontrolled rapid pans
+  onto empty space; a direction change ends a sweep.
 * ``glitch_score``     - dimensionless, higher is worse::
 
       jumps_per_min = jumps / (n_samples / fps / 60)
       no_detection_fraction = no_detection_frames / n_samples
+      travel_score = travel_per_1s_window_px / 1000.0   # per 1000 px of 1 s travel
       glitch_score = 1.0 * jumps_per_min
                    + 5.0 * target_switches
                    + 100.0 * no_detection_fraction
+                   + 0.5 * travel_score
+                   + 2.0 * direction_reversals
+                   + 3.0 * fast_sweeps
 
   Weighting rationale: a single target switch is 5x a jump per minute, and a
-  tracker that is blind for half a clip scores ~50 from that term alone.
+  tracker that is blind for half a clip scores ~50 from that term alone. A
+  1000 px/s one-second travel adds 0.5, each reversal adds 2, and each fast
+  sweep adds 3 -- so a clip that swings wildly but never formally "jumps"
+  still surfaces in the score.
 """
 from __future__ import annotations
 
@@ -55,6 +83,18 @@ SWITCH_THRESHOLD_PX = 150.0
 HOLD_EPSILON_PX = 2.0
 MIN_FLAT_RUN = 10
 TARGET_WIDTH = 1080.0
+
+# --- New stability knobs (all configurable via compute_crop_metrics kwargs) ---
+# Rolling 1 s window: report the maximum |delta| travel seen inside any 1 s.
+TRAVEL_WINDOW_SECONDS = 1.0
+# Direction reversal: amplitude must exceed this many px and complete within
+# this many seconds to count as a reversal (ping-pong / wrong-target flip).
+REVERSAL_THRESHOLD_PX = 100.0
+REVERSAL_WINDOW_SECONDS = 2.0
+# Fast sweep: speed must stay above this many px/s for at least this many
+# seconds to count as a sweep (pan onto empty space).
+FAST_SWEEP_PX_PER_S = 400.0
+FAST_SWEEP_MIN_SECONDS = 0.5
 
 _SENDCMD_RE = re.compile(r"^\s*([\d.]+)\s+overlay\s+x\s+(-?[\d.]+)")
 
@@ -74,6 +114,104 @@ def parse_sendcmd(text: str) -> list[CropSample]:
     return samples
 
 
+def _rolling_max_travel(crop_x: list[float], times: list[float], window_s: float) -> float:
+    """Greatest sum of |delta| inside any contiguous window of ``window_s`` s."""
+    best = 0.0
+    n = len(crop_x)
+    j = 0
+    for i in range(n):
+        if j < i:
+            j = i
+        while j + 1 < n and times[j + 1] - times[i] <= window_s:
+            j += 1
+        travel = sum(abs(crop_x[k] - crop_x[k - 1]) for k in range(i + 1, j + 1))
+        if travel > best:
+            best = travel
+    return best
+
+
+def _count_reversals(
+    crop_x: list[float], times: list[float], threshold_px: float, window_s: float
+) -> int:
+    """Count direction reversals of amplitude > threshold_px within window_s s.
+
+    A reversal is a local extremum (peak or trough) in the trajectory whose
+    |amplitude| vs the previous extremum exceeds ``threshold_px`` and which
+    occurs within ``window_s`` of that previous extremum. Each qualifying
+    extremum after the first counts as one reversal.
+    """
+    if len(crop_x) < 3:
+        return 0
+    deltas = [crop_x[i] - crop_x[i - 1] for i in range(1, len(crop_x))]
+    # Sign of movement; zero deltas keep the previous sign so flat stretches
+    # don't manufacture reversals.
+    signs = []
+    prev = 0
+    for d in deltas:
+        s = 1 if d > 0 else (-1 if d < 0 else prev)
+        signs.append(s)
+        if d != 0:
+            prev = s
+    reversals = 0
+    last_extremum_idx = None  # index into deltas of last counted extremum
+    for i in range(1, len(deltas)):
+        if signs[i] != 0 and signs[i - 1] != 0 and signs[i] != signs[i - 1]:
+            # Reversal point between sample i-1 and i (delta index i-1).
+            amp = abs(crop_x[i] - crop_x[i - 1])
+            # Amplitude of the swing that just reversed: compare current sample
+            # to the sample at the previous reversal (or start).
+            if last_extremum_idx is None:
+                swing = abs(crop_x[i] - crop_x[0])
+            else:
+                swing = abs(crop_x[i] - crop_x[last_extremum_idx])
+            within_time = True
+            if last_extremum_idx is not None:
+                within_time = (times[i] - times[last_extremum_idx]) <= window_s
+            if swing > threshold_px and within_time:
+                reversals += 1
+                last_extremum_idx = i
+    return reversals
+
+
+def _count_fast_sweeps(
+    crop_x: list[float], times: list[float], fps: float, px_per_s: float, min_s: float
+) -> int:
+    """Count maximal unidirectional runs where speed stays above px_per_s
+    for at least min_s s.
+
+    A sweep must move in one direction; a direction change ends the sweep.
+    This separates a sustained pan onto empty space (one sweep) from ping-pong
+    between two faces (no sustained sweep) and from a sweep-and-return (two
+    sweeps when a pause separates them).
+    """
+    if len(crop_x) < 2:
+        return 0
+    dt = 1.0 / fps
+    count = 0
+    i = 1
+    n = len(crop_x)
+    while i < n:
+        d = crop_x[i] - crop_x[i - 1]
+        if abs(d) / dt <= px_per_s:
+            i += 1
+            continue
+        start = i - 1
+        direction = 1 if d > 0 else -1
+        i += 1
+        while i < n:
+            d = crop_x[i] - crop_x[i - 1]
+            sp = abs(d) / dt
+            sgn = 1 if d > 0 else (-1 if d < 0 else direction)
+            if sp > px_per_s and sgn == direction:
+                i += 1
+            else:
+                break
+        duration = times[i - 1] - times[start]
+        if duration >= min_s:
+            count += 1
+    return count
+
+
 def compute_crop_metrics(
     samples: list[CropSample],
     *,
@@ -84,14 +222,25 @@ def compute_crop_metrics(
     switch_threshold_px: float = SWITCH_THRESHOLD_PX,
     hold_epsilon_px: float = HOLD_EPSILON_PX,
     min_flat_run: int = MIN_FLAT_RUN,
+    travel_window_seconds: float = TRAVEL_WINDOW_SECONDS,
+    reversal_threshold_px: float = REVERSAL_THRESHOLD_PX,
+    reversal_window_seconds: float = REVERSAL_WINDOW_SECONDS,
+    fast_sweep_px_per_s: float = FAST_SWEEP_PX_PER_S,
+    fast_sweep_min_seconds: float = FAST_SWEEP_MIN_SECONDS,
+    detection_records: list[dict] | None = None,
 ) -> dict:
     """Compute face-tracking stability metrics from a crop trajectory.
 
     ``samples`` are consecutive per-frame ``(time, overlay_x)`` values in the
     order emitted by the renderer. ``fps`` converts frame counts to seconds.
+
+    ``detection_records`` (optional) is the tracker's per-frame sidecar, a list
+    of dicts with at least a ``detected`` bool; when provided it is used for
+    the exact ``no_detection`` count instead of the flat-run heuristic.
     """
     sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
     crop_x = [round((target_width / 2.0 - s.overlay_x) / sf, 2) for s in samples]
+    times = [s.time for s in samples]
     n = len(samples)
 
     result: dict = {
@@ -103,6 +252,11 @@ def compute_crop_metrics(
         "switch_threshold_px": switch_threshold_px,
         "hold_epsilon_px": hold_epsilon_px,
         "min_flat_run": min_flat_run,
+        "travel_window_seconds": travel_window_seconds,
+        "reversal_threshold_px": reversal_threshold_px,
+        "reversal_window_seconds": reversal_window_seconds,
+        "fast_sweep_px_per_s": fast_sweep_px_per_s,
+        "fast_sweep_min_seconds": fast_sweep_min_seconds,
     }
     if n == 0:
         result.update(
@@ -110,6 +264,11 @@ def compute_crop_metrics(
             longest_hold_frames=0, longest_hold_seconds=0.0,
             no_detection_frames=0, no_detection_seconds=0.0,
             jumps_per_min=0.0, no_detection_fraction=0.0, glitch_score=0.0,
+            max_abs_delta_px=0.0,
+            travel_per_1s_window_px=0.0,
+            direction_reversals=0,
+            fast_sweeps=0,
+            no_detection_source="none",
         )
         return result
 
@@ -132,9 +291,16 @@ def compute_crop_metrics(
             i += 1
     longest = max((length + 1 for _, length in runs), default=0)
 
-    no_detection_frames = min(
-        sum(length + 1 for _, length in runs if length >= min_flat_run), n
-    )
+    # Exact no-detection count from the tracker sidecar when available.
+    if detection_records:
+        no_detection_frames = sum(1 for r in detection_records if not r.get("detected", False))
+        no_detection_frames = min(no_detection_frames, n)
+        no_detection_source = "tracker_sidecar"
+    else:
+        no_detection_frames = min(
+            sum(length + 1 for _, length in runs if length >= min_flat_run), n
+        )
+        no_detection_source = "flat_run_heuristic"
 
     duration_seconds = (samples[-1].time - samples[0].time) or (n / fps)
     minutes = max(duration_seconds, 1.0) / 60.0
@@ -142,10 +308,21 @@ def compute_crop_metrics(
     no_detection_fraction = no_detection_frames / n
     longest_seconds = longest / fps
 
+    travel_per_1s_window_px = _rolling_max_travel(crop_x, times, travel_window_seconds)
+    direction_reversals = _count_reversals(
+        crop_x, times, reversal_threshold_px, reversal_window_seconds
+    )
+    fast_sweeps = _count_fast_sweeps(
+        crop_x, times, fps, fast_sweep_px_per_s, fast_sweep_min_seconds
+    )
+
     glitch_score = (
         1.0 * jumps_per_min
         + 5.0 * switches
         + 100.0 * no_detection_fraction
+        + 0.5 * (travel_per_1s_window_px / 1000.0)
+        + 2.0 * direction_reversals
+        + 3.0 * fast_sweeps
     )
 
     result.update(
@@ -159,6 +336,10 @@ def compute_crop_metrics(
         no_detection_fraction=round(no_detection_fraction, 4),
         glitch_score=round(glitch_score, 3),
         max_abs_delta_px=round(max(deltas, default=0.0), 2),
+        travel_per_1s_window_px=round(travel_per_1s_window_px, 2),
+        direction_reversals=direction_reversals,
+        fast_sweeps=fast_sweeps,
+        no_detection_source=no_detection_source,
     )
     return result
 
@@ -177,3 +358,38 @@ def caption_metrics(dialogues: list[dict]) -> dict:
         "avg_words_per_caption": round(total_words / n, 2) if n else 0.0,
         "caption_change_times": sorted(d["start"] for d in dialogues),
     }
+
+
+def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120) -> list[dict]:
+    """Run ffmpeg blackdetect on ``render_path`` and return black periods.
+
+    Each dict: ``black_start``, ``black_end``, ``black_duration`` (seconds).
+    Returns [] when ffmpeg reports no black periods or is unavailable.
+    """
+    import subprocess
+
+    cmd = [
+        ffmpeg, "-hide_banner", "-loglevel", "info", "-an",
+        "-i", str(render_path),
+        "-vf", "blackdetect=d=0.2:pix_th=0.10",
+        "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    periods: list[dict] = []
+    for line in (proc.stderr or "").splitlines():
+        if "black_start" not in line:
+            continue
+        fields: dict[str, float] = {}
+        for token in line.split():
+            if "black_start" in token:
+                fields["black_start"] = float(token.split(":", 1)[1])
+            elif "black_end" in token:
+                fields["black_end"] = float(token.split(":", 1)[1])
+            elif "black_duration" in token:
+                fields["black_duration"] = float(token.split(":", 1)[1])
+        if len(fields) == 3:
+            periods.append({k: round(v, 3) for k, v in fields.items()})
+    return periods

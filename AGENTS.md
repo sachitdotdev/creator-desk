@@ -24,7 +24,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ### Backend (Python / FastAPI)
 - `backend/app/main.py`                    — FastAPI app entry; mounts `/api`, `/renders`, `/sources`
 - `backend/app/api/routes.py`              — HTTP routes (videos, clips, templates, accounts, `/api/music`)
-- `backend/app/core/config.py`             — settings + ffmpeg binary resolution; LLM context limits (`LLM_MAX_MODEL_LEN`, `LLM_MAX_NUM_SEQS`) and `CLIP_*` window/gap/length knobs live here
+- `backend/app/core/config.py`             — settings + ffmpeg binary resolution; LLM context limits (`LLM_MAX_MODEL_LEN`, `LLM_MAX_NUM_SEQS`) and `CLIP_*` window/gap/length knobs live here; face-tracking knobs (`FACE_*`, `FACE_CUT_*`) also live here
 - `backend/app/core/gpu_lock.py`           — process-wide single-tenant GPU lock (sync + async)
 - `backend/app/core/paths.py`              — single source of truth for filesystem paths
 - `backend/app/core/processing_utils.py`   — robust media processing utilities (`run_subprocess`)
@@ -36,7 +36,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/services/clip_selector.py`      — whole-video clip selection: windowed LLM candidate search (up to 4 concurrent windows) + deterministic gap/bucket/snapped-boundary picking; shared by `routes._run_pipeline` and `batch_service`
 - `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder
 - `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook
-- `backend/app/services/face_tracker.py`       — YOLOv8 face detection
+- `backend/app/services/face_tracker.py`       — YOLOv8 face detection with cut reset, target hysteresis, spring smoothing, hold-then-ease loss handling; writes a per-frame detection sidecar (`.track.json`) next to each sendcmd
 - `backend/app/services/audio_compiler.py`     — audio graph: SFX layering, BGM ducking, limiter
 - `backend/app/services/audio_loudness.py`     — EBU R128 two-pass loudnorm
 - `backend/app/services/music_service.py`      — BGM library (scan, sidecars, safe uploads)
@@ -74,7 +74,9 @@ or `ls -R` at the start of a task.** Open only the files you need.
   in this tracked document.
 
 ### Tests & tooling
-- `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates)
+- `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates, face tracker)
+- `tools/render_metrics.py` — pure stability metrics for crop trajectories: jumps, switches, holds, no-detection, **travel per rolling 1 s window, direction reversals, fast sweeps**, reweighted `glitch_score`; unit-tested with synthetic trajectories
+- `tools/render_review.py`  — per-render review: contact sheet, **black-frame detection (ffmpeg blackdetect) + black first frame flag**, **caption safe-zone check (bottom margin % of height)**, **missed-frames contact sheet** (up to 16 no-face frames from the tracker sidecar with timestamps), `metrics.json` echoing all metrics
 - `backend/ruff.toml`       — ruff config (FastAPI `Depends` allowed in defaults)
 - `.github/workflows/ci.yml` — CI job `backend` (ruff + pytest on Python 3.12, lightweight deps only)
 - `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
