@@ -125,7 +125,15 @@ def normalize_segments(transcript_segments: Any) -> list[dict[str, Any]]:
 def effective_window_chars() -> int:
     """Cap window size so prompt + output fit the real vLLM context window."""
     budget = LLM_MAX_MODEL_LEN - CLIP_WINDOW_MAX_TOKENS - LLM_PROMPT_TOKEN_RESERVE
-    return min(CLIP_WINDOW_CHARS, max(1, budget) * LLM_CHARS_PER_TOKEN)
+    if budget <= 0:
+        raise ValueError(
+            "Invalid clip-selector token budget: "
+            f"LLM_MAX_MODEL_LEN={LLM_MAX_MODEL_LEN} - "
+            f"CLIP_WINDOW_MAX_TOKENS={CLIP_WINDOW_MAX_TOKENS} - "
+            f"LLM_PROMPT_TOKEN_RESERVE={LLM_PROMPT_TOKEN_RESERVE} "
+            f"= {budget}; the input budget must be strictly positive."
+        )
+    return min(CLIP_WINDOW_CHARS, budget * LLM_CHARS_PER_TOKEN)
 
 
 def build_windows(
@@ -220,12 +228,21 @@ async def _ask_window_llm(
     client: Any,
     model: str,
     custom_prompt: str | None = None,
+    vibe: str | None = None,
 ) -> Any:
     """One windowed LLM request. Returns the raw message content."""
     target = (
         f"Return up to {CLIP_CANDIDATES_PER_WINDOW} candidate moments as JSON "
         f"(absolute seconds inside the window)."
     )
+    system_prompt = SYSTEM_PROMPT
+    if vibe:
+        # Style only shifts the rubric's emphasis; the JSON schema is unchanged.
+        system_prompt += (
+            f"\nEditorial style: {vibe}. When applying the rubric above, give "
+            f"extra weight to moments that fit this style."
+        )
+        target += f"\nStyle: {vibe}. Prefer moments that fit this style."
     if custom_prompt:
         target += f"\nEditor's extra instruction: {custom_prompt}"
     user_prompt = (
@@ -235,7 +252,7 @@ async def _ask_window_llm(
     resp = await client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,
@@ -257,12 +274,13 @@ async def _evaluate_window(
     client: Any,
     model: str,
     custom_prompt: str | None,
+    vibe: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return (candidates, failed). A bad window is logged and skipped."""
     raw: Any = "<no response>"
     try:
         raw = await _ask_window_llm(
-            window, total_windows, client, model, custom_prompt
+            window, total_windows, client, model, custom_prompt, vibe
         )
         candidates = parse_candidate_response(raw)
         print(
@@ -321,6 +339,29 @@ def _usable_range(segments: list[dict[str, Any]]) -> tuple[float, float]:
     return lo, hi
 
 
+def _clip_within_range(
+    start: float,
+    end: float,
+    segments: list[dict[str, Any]],
+    lo: float,
+    hi: float,
+) -> tuple[float, float] | None:
+    """Find a segment-aligned clip inside [lo, hi] closest to (start, end)."""
+    valid_starts = sorted({seg["start"] for seg in segments if lo <= seg["start"] <= hi})
+    valid_ends = sorted({seg["end"] for seg in segments if lo <= seg["end"] <= hi})
+    best: tuple[float, float] | None = None
+    best_cost = float("inf")
+    for s in valid_starts:
+        for e in valid_ends:
+            if not (CLIP_MIN_SECONDS <= e - s <= CLIP_MAX_SECONDS):
+                continue
+            cost = abs(s - start) + abs(e - end)
+            if cost < best_cost:
+                best_cost = cost
+                best = (s, e)
+    return best
+
+
 def _make_pick(
     start: float, end: float, score: float, hook: str, segments: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -328,14 +369,31 @@ def _make_pick(
     if snapped is None:
         return None
     s, e = snapped
+    lo, hi = _usable_range(segments)
+    if s < lo or e > hi:
+        # Snapping/min-max enforcement can push a boundary past the trimmed
+        # range. Re-align to a valid clip inside it, or drop the candidate.
+        replacement = _clip_within_range(start, end, segments, lo, hi)
+        if replacement is None:
+            return None
+        s, e = replacement
     return {
-        "start": s,
-        "end": e,
+        "start": round(float(s), 3),
+        "end": round(float(e), 3),
         "score": score,
         "hook": hook,
         "layout": "center_crop",
         "operations": [],
     }
+
+
+def _gap_compatible(pick: dict[str, Any], picks: list[dict[str, Any]]) -> bool:
+    """True when a pick clears the configured gap from every existing pick."""
+    return all(
+        pick["start"] >= other["end"] + CLIP_MIN_GAP_SECONDS
+        or pick["end"] + CLIP_MIN_GAP_SECONDS <= other["start"]
+        for other in picks
+    )
 
 
 def select_picks(
@@ -369,19 +427,12 @@ def select_picks(
     def bucket_of(pick: dict[str, Any]) -> int:
         return min(buckets - 1, max(0, int((pick["start"] - lo) / bucket_size)))
 
-    def compatible(pick: dict[str, Any]) -> bool:
-        return all(
-            pick["start"] >= other["end"] + CLIP_MIN_GAP_SECONDS
-            or pick["end"] + CLIP_MIN_GAP_SECONDS <= other["start"]
-            for other in picks
-        )
-
     # At most one pick per equal-sized time bucket until all buckets are used.
     for pick in valid:
         if len(picks) >= num_clips:
             break
         bucket = bucket_of(pick)
-        if bucket in used_buckets or not compatible(pick):
+        if bucket in used_buckets or not _gap_compatible(pick, picks):
             deferred.append(pick)
             continue
         picks.append(pick)
@@ -391,7 +442,7 @@ def select_picks(
     for pick in deferred:
         if len(picks) >= num_clips:
             break
-        if compatible(pick):
+        if _gap_compatible(pick, picks):
             picks.append(pick)
 
     return sorted(picks, key=lambda pick: pick["start"])
@@ -412,23 +463,27 @@ def even_spaced_picks(
         target_start = lo + index * step
         target_end = min(hi, target_start + max(CLIP_MIN_SECONDS, min(step, CLIP_MAX_SECONDS)))
         pick = _make_pick(target_start, target_end, 0.0, "Worth a watch", segments)
-        if pick is not None and all(
-            pick["start"] >= other["end"] + CLIP_MIN_GAP_SECONDS
-            or pick["end"] + CLIP_MIN_GAP_SECONDS <= other["start"]
-            for other in picks
-        ):
+        if pick is not None and _gap_compatible(pick, picks):
             picks.append(pick)
-        else:
-            # Sparse segment grids can snap two slots to the same place; walk
-            # forward to the next segment start instead of dropping a clip.
-            later = [seg for seg in segments if seg["start"] > target_start + CLIP_MIN_SECONDS]
-            if later:
-                next_start = min(later, key=lambda seg: seg["start"])["start"]
-                pick = _make_pick(
-                    next_start, next_start + CLIP_MAX_SECONDS, 0.0, "Worth a watch", segments
-                )
-                if pick is not None:
-                    picks.append(pick)
+            continue
+        # Sparse segment grids can snap two slots to the same place; walk
+        # forward to the next segment start instead of dropping a clip. The
+        # retry must clear the same gap/overlap check as any other pick.
+        later = [seg for seg in segments if seg["start"] > target_start + CLIP_MIN_SECONDS]
+        if later:
+            next_start = min(later, key=lambda seg: seg["start"])["start"]
+            retry = _make_pick(
+                next_start, next_start + CLIP_MAX_SECONDS, 0.0, "Worth a watch", segments
+            )
+            if retry is not None and _gap_compatible(retry, picks):
+                picks.append(retry)
+    if len(picks) < num_clips:
+        print(
+            "[CLIP-SELECT] fallback timeline cannot satisfy "
+            f"{CLIP_MIN_GAP_SECONDS:g}s gap for {num_clips} clips; "
+            f"returning {len(picks)}.",
+            flush=True,
+        )
     return picks[:num_clips]
 
 
@@ -470,7 +525,7 @@ async def generate_clips(
     async def run_window(window: Window) -> tuple[list[dict[str, Any]], bool]:
         async with semaphore:
             return await _evaluate_window(
-                window, len(windows), client, llm_model, custom_prompt
+                window, len(windows), client, llm_model, custom_prompt, vibe
             )
 
     results = await asyncio.gather(*(run_window(window) for window in windows))

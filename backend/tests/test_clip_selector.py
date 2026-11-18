@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,7 +74,7 @@ def test_mocked_llm_picks_are_spread_and_boundaries_are_segment_edges(monkeypatc
     seg_starts = {s["start"] for s in segs}
     seg_ends = {s["end"] for s in segs}
 
-    async def fake_llm(window, total_windows, client, model, custom_prompt=None):
+    async def fake_llm(window, total_windows, client, model, custom_prompt=None, vibe=None):
         # Equal scores everywhere: only the bucket rule can spread the picks.
         candidates = [
             {"start": window.start + 60.0, "end": window.start + 105.0, "score": 5, "hook": "first big moment"},
@@ -104,7 +105,7 @@ def test_failing_window_is_skipped_without_aborting(monkeypatch, capsys):
     segs = segments_for_seconds(1800.0)
     monkeypatch.setattr(clip_selector, "CLIP_WINDOW_CHARS", 600)
 
-    async def fake_llm(window, total_windows, client, model, custom_prompt=None):
+    async def fake_llm(window, total_windows, client, model, custom_prompt=None, vibe=None):
         if window.index == 1:
             raise RuntimeError("vLLM returned garbage for this window")
         return candidate_json(
@@ -125,7 +126,7 @@ def test_all_windows_failing_uses_whole_video_fallback(monkeypatch, capsys):
     segs = segments_for_seconds(5400.0)
     monkeypatch.setattr(clip_selector, "CLIP_WINDOW_CHARS", 600)
 
-    async def fake_llm(window, total_windows, client, model, custom_prompt=None):
+    async def fake_llm(window, total_windows, client, model, custom_prompt=None, vibe=None):
         raise RuntimeError("vLLM down")
 
     monkeypatch.setattr(clip_selector, "_ask_window_llm", fake_llm)
@@ -151,3 +152,91 @@ def test_fenced_and_malformed_json():
     )[0]["start"] == 12
     with pytest.raises(json.JSONDecodeError):
         clip_selector.parse_candidate_response("```json\n{not json}\n```")
+
+
+def test_effective_window_chars_rejects_non_positive_budget(monkeypatch):
+    original = clip_selector.LLM_MAX_MODEL_LEN
+    monkeypatch.setattr(clip_selector, "LLM_MAX_MODEL_LEN", 800)
+    with pytest.raises(ValueError, match="budget|positive"):
+        clip_selector.effective_window_chars()
+
+    # The default configuration still yields a usable input window.
+    monkeypatch.setattr(clip_selector, "LLM_MAX_MODEL_LEN", original)
+    assert clip_selector.effective_window_chars() > 0
+
+
+def test_snapped_pick_stays_inside_usable_range():
+    segs = segments_for_seconds(300, step=20.0)  # 20-second segments over 300 s
+    lo, hi = clip_selector._usable_range(segs)
+    assert hi == 270.0
+
+    pick = clip_selector._make_pick(240.0, 265.0, 8.0, "great hook", segs)
+    assert pick is not None
+    assert lo <= pick["start"] < pick["end"] <= hi
+    assert pick["end"] <= 270.0
+    assert pick["start"] in {s["start"] for s in segs}
+    assert pick["end"] in {s["end"] for s in segs}
+    assert (
+        clip_selector.CLIP_MIN_SECONDS
+        <= pick["end"] - pick["start"]
+        <= clip_selector.CLIP_MAX_SECONDS
+    )
+
+
+def test_fallback_retries_respect_gap_and_return_fewer_clips(capsys):
+    segs = segments_for_seconds(300, step=30.0)  # 30-second segments over 300 s
+    picks = clip_selector.even_spaced_picks(segs, num_clips=5)
+
+    # The timeline cannot fit 5 clips with the configured gap.
+    assert len(picks) < 5
+    for first, second in itertools.pairwise(picks):
+        assert first["end"] <= second["start"]  # never overlap
+        assert second["start"] - first["end"] >= clip_selector.CLIP_MIN_GAP_SECONDS
+    assert "gap" in capsys.readouterr().out
+
+
+def test_vibe_shapes_the_window_prompt(monkeypatch):
+    captured: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=candidate_json([]))
+                    )
+                ]
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    segs = segments_for_seconds(120)  # a single transcript window
+
+    asyncio.run(
+        clip_selector.generate_clips(
+            segs, num_clips=2, vibe="Chill Lo-fi", client=client, model="test"
+        )
+    )
+    assert captured
+    first_messages = json.dumps(captured[0]["messages"])
+    assert "Chill Lo-fi" in first_messages
+    assert "Prefer moments that fit this style" in first_messages
+
+    captured.clear()
+    asyncio.run(
+        clip_selector.generate_clips(
+            segs, num_clips=2, vibe="Hype Rant", client=client, model="test"
+        )
+    )
+    assert captured
+    second_messages = json.dumps(captured[0]["messages"])
+    assert "Hype Rant" in second_messages
+    assert first_messages != second_messages
+
+    # The default vibe keeps working with the unchanged public signature.
+    captured.clear()
+    asyncio.run(
+        clip_selector.generate_clips(segs, num_clips=2, client=client, model="test")
+    )
+    assert captured
+    assert "Streamer Hype" in json.dumps(captured[0]["messages"])
