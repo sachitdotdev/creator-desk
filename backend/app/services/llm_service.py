@@ -1,9 +1,11 @@
-"""LLM service using OpenAI client (vLLM) to extract short clips and generate social copy."""
+"""LLM service using OpenAI client (vLLM) to extract short clips and generate social copy.
+
+Clip selection itself lives in ``app.services.clip_selector`` so the interactive
+pipeline and the batch service share one implementation. The public
+``generate_clips`` signature is kept here for backwards compatibility.
+"""
 from __future__ import annotations
 
-import json
-import logging
-import traceback
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -11,8 +13,6 @@ from pydantic import BaseModel, Field
 
 client = AsyncOpenAI(base_url="http://localhost:8002/v1", api_key="not-needed")
 print("DEBUG: Initialized vLLM Client at http://localhost:8002/v1")
-
-logger = logging.getLogger(__name__)
 
 # --- The Pydantic Schema Definitions ---
 class TextOperation(BaseModel):
@@ -42,42 +42,6 @@ class ClipsResponse(BaseModel):
     clips: list[Clip]
 # ---------------------------------------
 
-SYSTEM_PROMPT = """You are a ruthless TikTok editor. Identify the most viral, scroll-stopping moments in the transcript.
-
-DO NOT just copy random nouns from the transcript (e.g., "CHEESE CARS", "BIODEGRADABLE"). 
-You must invent a compelling, emotional hook based on what is being said.
-
-Use one of these PROVEN VIRAL HOOK FORMULAS:
-- Negation: "It's not X, it's Y"
-- Curiosity Gap: "The truth about X"
-- Contrarian: "You've been lied to about X"
-- Personal Confession: "I wish I knew this sooner"
-
-CRITICAL INSTRUCTIONS:
-1. The "text" field MUST be exactly 3 to 5 WORDS.
-2. YOU MUST GENERATE AT LEAST 3 TEXT OPERATIONS PER CLIP. Spread them out across the 60-second duration.
-3. The "start" and "end" timestamps for your text operations MUST be absolute timestamps from the original transcript.
-
-    Operations can be one of:
-    - {"type": "text", "text": "...", "start": <seconds>, "end": <seconds>}
-    - {"type": "sfx", "name": "boom" | "whoosh" | "pop", "start": <seconds>, "volume": <0.0-1.0, optional>}
-
-    Use "sfx" sparingly: only at hook reveals (first 1-2 seconds),
-    surprising punchlines, or section transitions.
-    Never more than 3 SFX per clip. Never add "end" to sfx ops.
-EXAMPLES OF BAD HOOKS (DO NOT DO THIS):
-- "CHEESE CARS"
-- "BIODEGRADABLE"
-- "WINDSHIELD WIPERS"
-
-EXAMPLES OF GOOD VIRAL HOOKS (DO THIS):
-- "THE TRUTH ABOUT CHEESE"
-- "STOP MAKING BAD DECISIONS"
-- "WHY YOU FEEL GUILTY"
-- "THIS CHANGES EVERYTHING"
-
-Return ONLY valid JSON matching the schema."""
-
 class LLMService:
     def __init__(self, host: str | None = None, model: str | None = None):
         self.client = client
@@ -96,113 +60,14 @@ class LLMService:
         vibe: str = "Streamer Hype",
         custom_prompt: str | None = None,
     ) -> list[dict[str, Any]]:
-        
-        full_transcript_text = "\n".join(
-            f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text']}"
-            for s in transcript_segments
+        """Delegate to the shared whole-video selector (signature preserved)."""
+        from app.services.clip_selector import generate_clips as select_clips
+
+        return await select_clips(
+            transcript_segments,
+            num_clips=num_clips,
+            vibe=vibe,
+            custom_prompt=custom_prompt,
+            client=self.client,
+            model=self.model,
         )
-        # DIAGNOSTIC: the pipeline hard-caps the transcript at 4000 chars before
-        # it reaches vLLM. estimate ~= chars/4; max-model-len is 4096.
-        transcript_token_estimate = len(full_transcript_text) // 4
-        transcript_text = full_transcript_text[:4000]
-        tokens_sent = len(transcript_text) // 4
-        was_truncated = len(transcript_text) < len(full_transcript_text)
-
-        user_prompt = f"TRANSCRIPT:\n{transcript_text}\n\nTARGET: Select exactly {num_clips} best short clips. Return ONLY valid JSON."
-
-        try:
-            # Pass the schema to vLLM to enforce structured JSON output
-            schema = ClipsResponse.model_json_schema()
-            
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.7,
-                max_tokens=2048,
-                # vLLM ignores Ollama's keep_alive; VRAM is released by server lifetime, not per request.
-                response_format={"type": "json_schema", "json_schema": {"name": "clips_response", "schema": schema}},
-            )
-            
-            raw = resp.choices[0].message.content
-            print(f"RAW VLLM RESPONSE: {raw}", flush=True)
-            
-            obj = json.loads(raw)
-            if isinstance(obj, list):
-                clips = obj
-            else:
-                clips = obj.get("clips", [])
-            
-            normalized = []
-            for c in clips:
-                raw_start = c.get("start", 0.0)
-                raw_end = c.get("end", 60.0)
-                if isinstance(raw_start, str):
-                    raw_start = float(raw_start.replace("s", "").strip())
-                if isinstance(raw_end, str):
-                    raw_end = float(raw_end.replace("s", "").strip())
-                
-                if "operations" not in c and "text" in c:
-                    ops = [{"type": "text", "start": raw_start, "end": raw_end, "text": c.get("text")}]
-                else:
-                    # Preserve both text and sfx operations returned by the LLM.
-                    raw_ops = c.get("operations", []) or []
-                    ops = [op for op in raw_ops if op.get("type") in ("text", "sfx")]
-                    
-                normalized.append({
-                    "start": raw_start,
-                    "end": raw_end,
-                    "layout": c.get("layout", "center_crop"),
-                    "operations": ops
-                })
-            self._log_clip_selection(
-                transcript_token_estimate, tokens_sent, was_truncated, False, normalized
-            )
-            return normalized
-            
-        except Exception as exc:  # noqa: BLE001 - LLM failure falls back to clip heuristics
-            print(f"LLM CRASHED - FALLING BACK: {exc}", flush=True)
-            traceback.print_exc()
-            fallback = self._generate_fallback_clips(transcript_segments, num_clips, vibe)
-            self._log_clip_selection(
-                transcript_token_estimate, tokens_sent, was_truncated, True, fallback
-            )
-            return fallback
-
-    @staticmethod
-    def _log_clip_selection(
-        transcript_token_estimate: int,
-        tokens_sent: int,
-        was_truncated: bool,
-        used_fallback: bool,
-        clips: list[dict[str, Any]],
-    ) -> None:
-        """Log-only diagnostic for why a 1-hour video yields clips from one short window.
-
-        Emits one line with: token estimate of the full transcript, tokens actually
-        sent to vLLM, whether the 4000-char cap truncated it, whether the heuristic
-        fallback produced the clips, and the selected clip (start, end) times.
-        """
-        times = ", ".join(f"({c.get('start', 0):.1f},{c.get('end', 60):.1f})" for c in clips)
-        print(
-            f"[CLIP-SELECT] transcript_tokens_est={transcript_token_estimate} "
-            f"tokens_sent={tokens_sent} truncated={was_truncated} "
-            f"fallback={used_fallback} n_clips={len(clips)} times=[{times}]",
-            flush=True,
-        )
-
-    @staticmethod
-    def _generate_fallback_clips(transcript_segments: list[dict], num_clips: int, vibe: str) -> list[dict[str, Any]]:
-        if not transcript_segments: return []
-        starts = [s['start'] for s in transcript_segments]
-        ends = [s['end'] for s in transcript_segments]
-        duration = max(ends) - min(starts)
-        step = min(duration / num_clips, 60.0)
-        clips = []
-        for i in range(num_clips):
-            s = min(starts) + (i * step)
-            e = s + 61.0
-            clips.append({"start": round(s, 1), "end": round(e, 1), "layout": "center_crop", "operations": []})
-        return clips

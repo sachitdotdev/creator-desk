@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models
+from app.core.config import CLIP_MAX_SECONDS, CLIP_MIN_SECONDS
 from app.database import SessionLocal, get_db
 from app.services import music_service
 from app.services.llm_service import LLMService
@@ -95,6 +96,23 @@ def _render_clip_in_thread(clip_id: int, video_id: int, template_id: int | None)
         render_db.close()
 
 
+def _select_clips_in_thread(transcript_segments, num_clips: int, vibe: str) -> list[dict]:
+    """Run the async clip selector on a worker thread, off the event loop.
+
+    Stage 2 (boundary snapping/repair) is CPU-bound and the selector opens its
+    own semaphore for the vLLM requests, so ``generate_clips`` must not run
+    inline in this async route. No request-scoped DB session crosses the thread
+    boundary; only transcript data goes in and plain clip dicts come back.
+    """
+    return asyncio.run(
+        LLMService().generate_clips(
+            transcript_segments=transcript_segments,
+            num_clips=num_clips,
+            vibe=vibe,
+        )
+    )
+
+
 async def _run_pipeline(video_id: str):
     print("DEBUG: Pipeline started", flush=True)
     db = SessionLocal()
@@ -141,11 +159,14 @@ async def _run_pipeline(video_id: str):
         db.commit()
 
         print("DEBUG: Starting LLM clip generation", flush=True)
-        # Call LLMService to generate clips
-        clips = await LLMService().generate_clips(
-            transcript_segments=whisper_result,
-            num_clips=5,
-            vibe="Streamer Hype",
+        # The selector does CPU-bound stage-2 work and its own vLLM request
+        # concurrency; keep all of it off the event loop (no DB session is
+        # shared with the worker thread).
+        clips = await asyncio.to_thread(
+            _select_clips_in_thread,
+            whisper_result,
+            5,
+            "Streamer Hype",
         )
 
         print("DEBUG: Starting rendering", flush=True)
@@ -153,7 +174,11 @@ async def _run_pipeline(video_id: str):
         clips = clips or []
         for idx, clip_data in enumerate(clips):
             start_t = float(clip_data.get("start", 0.0))
-            end_t = start_t + 61.0
+            # The selector snaps both boundaries to transcript segment edges;
+            # never force a fixed start+61s duration here (AGENTS.md rule 2/6).
+            end_t = float(clip_data.get("end", start_t + CLIP_MAX_SECONDS))
+            if end_t - start_t < CLIP_MIN_SECONDS:
+                end_t = start_t + CLIP_MIN_SECONDS
             clip = models.Clip(
                 video_id=video.id,
                 start_time=start_t,
@@ -195,7 +220,7 @@ async def _run_pipeline(video_id: str):
             # QC: Audit the rendered clip
             output_path = clip.output_path if clip.output_path else clip.file_path
             if output_path:
-                min_dur = 60.0
+                min_dur = CLIP_MIN_SECONDS
                 try:
                     # QC shells out to ffprobe and can block for seconds; keep
                     # it off the event loop so health checks and status polling

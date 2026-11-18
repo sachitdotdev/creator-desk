@@ -115,6 +115,29 @@ BATCH_DONE_DIR = PROCESSED_DIR     # successfully processed videos move here
 BATCH_NUM_CLIPS = int(os.getenv("BATCH_NUM_CLIPS", "5"))
 BATCH_VIBE = os.getenv("BATCH_VIBE", "Streamer Hype")
 
+# Whole-video clip selection (backend/app/services/clip_selector.py).
+# vLLM is launched with --max-model-len 4096 and --max-num-seqs 4; the real
+# limits are configurable here so window sizing always leaves room for output.
+LLM_MAX_MODEL_LEN = int(os.getenv("LLM_MAX_MODEL_LEN", "4096"))
+LLM_MAX_NUM_SEQS = int(os.getenv("LLM_MAX_NUM_SEQS", "4"))
+# Tokens reserved for the system prompt, rubric and schema on every request.
+LLM_PROMPT_TOKEN_RESERVE = int(os.getenv("LLM_PROMPT_TOKEN_RESERVE", "400"))
+LLM_CHARS_PER_TOKEN = int(os.getenv("LLM_CHARS_PER_TOKEN", "4"))
+
+CLIP_WINDOW_CHARS = int(os.getenv("CLIP_WINDOW_CHARS", "6000"))
+CLIP_WINDOW_OVERLAP = float(os.getenv("CLIP_WINDOW_OVERLAP", "0.15"))
+CLIP_WINDOW_MAX_TOKENS = int(os.getenv("CLIP_WINDOW_MAX_TOKENS", "800"))
+CLIP_MAX_CONCURRENT_WINDOWS = int(
+    os.getenv("CLIP_MAX_CONCURRENT_WINDOWS", str(LLM_MAX_NUM_SEQS))
+)
+CLIP_CANDIDATES_PER_WINDOW = int(os.getenv("CLIP_CANDIDATES_PER_WINDOW", "2"))
+
+# Stage 2 is fully deterministic (no LLM calls).
+CLIP_EDGE_TRIM_SECONDS = float(os.getenv("CLIP_EDGE_TRIM_SECONDS", "30"))
+CLIP_MIN_GAP_SECONDS = float(os.getenv("CLIP_MIN_GAP_SECONDS", "90"))
+CLIP_MIN_SECONDS = float(os.getenv("CLIP_MIN_SECONDS", "30"))
+CLIP_MAX_SECONDS = float(os.getenv("CLIP_MAX_SECONDS", "61"))
+
 API_TITLE = "CreatorDesk AI"
 API_VERSION = "1.0.0"
 

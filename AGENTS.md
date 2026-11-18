@@ -24,7 +24,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ### Backend (Python / FastAPI)
 - `backend/app/main.py`                    — FastAPI app entry; mounts `/api`, `/renders`, `/sources`
 - `backend/app/api/routes.py`              — HTTP routes (videos, clips, templates, accounts, `/api/music`)
-- `backend/app/core/config.py`             — settings + ffmpeg binary resolution
+- `backend/app/core/config.py`             — settings + ffmpeg binary resolution; LLM context limits (`LLM_MAX_MODEL_LEN`, `LLM_MAX_NUM_SEQS`) and `CLIP_*` window/gap/length knobs live here
 - `backend/app/core/gpu_lock.py`           — process-wide single-tenant GPU lock (sync + async)
 - `backend/app/core/paths.py`              — single source of truth for filesystem paths
 - `backend/app/core/processing_utils.py`   — robust media processing utilities (`run_subprocess`)
@@ -32,7 +32,8 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/models.py`                  — SQLAlchemy models (Video, Clip, Template)
 - `backend/app/schemas.py`                 — Pydantic models
 - `backend/app/services/whisper_service.py`    — faster-whisper transcription
-- `backend/app/services/llm_service.py`        — vLLM (OpenAI-compatible) client at http://127.0.0.1:8002/v1, model `meissa-7b-awq`
+- `backend/app/services/llm_service.py`        — vLLM (OpenAI-compatible) client at http://127.0.0.1:8002/v1, model `meissa-7b-awq`; `generate_clips()` delegates to `clip_selector`
+- `backend/app/services/clip_selector.py`      — whole-video clip selection: windowed LLM candidate search (up to 4 concurrent windows) + deterministic gap/bucket/snapped-boundary picking; shared by `routes._run_pipeline` and `batch_service`
 - `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder
 - `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook
 - `backend/app/services/face_tracker.py`       — YOLOv8 face detection
