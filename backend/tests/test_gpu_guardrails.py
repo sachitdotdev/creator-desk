@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -335,15 +337,35 @@ def test_whisper_model_load_cuda_fallback_still_flushes(monkeypatch):
     assert flushed == ["whisper:model-load"]
 
 
-def _mock_transcribe_env(monkeypatch, tmp_path, *, transcribe_impl, whisperx_stub):
+def _mock_transcribe_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    transcribe_impl,
+    whisperx_stub,
+    load_model_impl=None,
+    mock_unload=True,
+):
     """Wire a WhisperService.transcribe run without CUDA/ffmpeg/whisperx wheels."""
     import tempfile
 
     from app.services import whisper_service
 
-    monkeypatch.setattr(tempfile, "mkdtemp", lambda: str(tmp_path))
-    monkeypatch.setattr(whisper_service.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda dir=None: str(tmp_path))
+    monkeypatch.setattr(whisper_service, "TEMP_DIR", tmp_path / "temp-root")
     (tmp_path / "chunk_000.wav").write_bytes(b"fake")
+
+    class FakePopen:
+        def __init__(self, cmd, *args, **kwargs):
+            self.cmd = cmd
+
+        def communicate(self, timeout=None):
+            return (b"", b"")
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(whisper_service.subprocess, "Popen", FakePopen)
 
     class FakeBatched:
         def __init__(self, model):
@@ -360,7 +382,15 @@ def _mock_transcribe_env(monkeypatch, tmp_path, *, transcribe_impl, whisperx_stu
     monkeypatch.setitem(sys.modules, "whisperx", whisperx_stub)
 
     service = whisper_service.WhisperService()
-    monkeypatch.setattr(service, "_load_model", lambda: object())
+    if load_model_impl is None:
+        monkeypatch.setattr(service, "_load_model", lambda: object())
+    else:
+        # Pass the service so the stub can populate its model attributes and
+        # make the real unload_model() assertion meaningful.
+        monkeypatch.setattr(service, "_load_model", lambda: load_model_impl(service))
+    if not mock_unload:
+        # Keep the REAL unload_model() so reference-release assertions count.
+        assert callable(service.unload_model)
     flushed: list[str] = []
     monkeypatch.setattr(whisper_service, "flush_vram", flushed.append)
     return service, flushed
@@ -412,6 +442,140 @@ def test_whisper_alignment_flushes_vram_when_alignment_raises(monkeypatch, tmp_p
     ]
 
 
+def test_whisper_chunking_runs_before_gpu_lock(monkeypatch, tmp_path):
+    """FFmpeg chunking must never hold the single-tenant GPU lock."""
+    from app.services import whisper_service
+
+    lock_free: list[bool] = []
+
+    def fake_chunk(self, audio_path, temp_dir):
+        # A DIFFERENT thread must be able to take the GPU lock while the chunk
+        # step runs (a same-thread probe would succeed thanks to RLock reentry).
+        probe: list[bool] = []
+
+        def try_lock():
+            try:
+                with gpu_lock("test:probe-during-chunk", timeout=0.3):
+                    probe.append(True)
+            except GPULockTimeout:
+                probe.append(False)
+
+        thread = threading.Thread(target=try_lock, daemon=True)
+        thread.start()
+        thread.join(timeout=2)
+        lock_free.extend(probe)
+        return [Path(temp_dir) / "chunk_000.wav"]
+
+    monkeypatch.setattr(
+        whisper_service.WhisperService, "_create_audio_chunks", fake_chunk
+    )
+    service, _ = _mock_transcribe_env(
+        monkeypatch,
+        tmp_path,
+        transcribe_impl=lambda: ([], types.SimpleNamespace(duration=1.0)),
+        whisperx_stub=types.SimpleNamespace(
+            load_align_model=lambda **k: (None, None),
+            align=lambda *a, **k: {"segments": []},
+        ),
+    )
+    service.transcribe("in.wav")
+    assert lock_free == [True]
+
+
+def test_whisper_chunk_ffmpeg_timeout_kills_process_and_cleans_temp(monkeypatch, tmp_path):
+    import tempfile
+
+    from app.services import whisper_service
+
+    chunk_dir = tmp_path / "chunk-scratch"
+
+    def fake_mkdtemp(dir=None):
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        (chunk_dir / "chunk_000.wav").write_bytes(b"fake")
+        return str(chunk_dir)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(whisper_service, "TEMP_DIR", tmp_path / "temp-root")
+
+    killed: list[bool] = []
+    timeouts: list[float | None] = []
+
+    class StalledPopen:
+        def __init__(self, cmd, *args, **kwargs):
+            self.cmd = cmd
+
+        def communicate(self, timeout=None):
+            timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+
+        def kill(self):
+            killed.append(True)
+
+    monkeypatch.setattr(whisper_service.subprocess, "Popen", StalledPopen)
+
+    service = whisper_service.WhisperService()
+    with pytest.raises(RuntimeError, match="chunking timed out"):
+        service.transcribe("in.wav")
+
+    assert killed == [True]
+    assert timeouts and timeouts[0] is not None  # bounded timeout, not None
+    assert not chunk_dir.exists()  # scratch dir removed on the failure path
+
+
+@pytest.mark.parametrize("should_raise", [False, True])
+def test_whisper_transcribe_releases_all_model_refs(
+    monkeypatch, tmp_path, should_raise
+):
+    """Real unload_model() clears stored refs; locals are dropped before flush."""
+    from app.services import whisper_service
+
+    def fake_load(svc):
+        svc._model = types.SimpleNamespace(name="model")
+        svc._batched_model = types.SimpleNamespace(name="batched")
+        return svc._model
+
+    def transcribe_impl():
+        if should_raise:
+            raise RuntimeError("transcribe failed")
+        return ([], types.SimpleNamespace(duration=1.0))
+
+    service, flushed = _mock_transcribe_env(
+        monkeypatch,
+        tmp_path,
+        transcribe_impl=transcribe_impl,
+        whisperx_stub=types.SimpleNamespace(
+            load_align_model=lambda **k: (object(), {}),
+            align=lambda *a, **k: {"segments": []},
+        ),
+        load_model_impl=fake_load,
+        mock_unload=False,  # exercise the REAL unload_model()
+    )
+
+    # Snapshot the transcribe frame at the final flush to prove local GPU refs
+    # were dropped before that flush (and therefore before the lock released).
+    local_snapshots: list[dict] = []
+
+    def flush_probe(stage):
+        flushed.append(stage)
+        if stage == "whisper:transcribe" and flushed.count(stage) == 2:
+            local_snapshots.append(dict(sys._getframe(1).f_locals))
+
+    monkeypatch.setattr(whisper_service, "flush_vram", flush_probe)
+
+    if should_raise:
+        with pytest.raises(RuntimeError, match="transcribe failed"):
+            service.transcribe("in.wav")
+    else:
+        service.transcribe("in.wav")
+
+    assert service._model is None
+    assert service._batched_model is None
+    assert len(local_snapshots) == 1
+    snapshot = local_snapshots[0]
+    for name in ("model", "batched_model", "model_a", "metadata", "aligned_result"):
+        assert snapshot.get(name) is None
+
+
 def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
     from app.services import face_tracker
 
@@ -458,7 +622,7 @@ def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_pat
 
     made_dirs: list[Path] = []
 
-    def make_temp_dir() -> str:
+    def make_temp_dir(*args, **kwargs) -> str:
         d = tmp_path / f"chunks_{len(made_dirs)}"
         d.mkdir()
         made_dirs.append(d)
@@ -467,8 +631,19 @@ def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_pat
     def fake_ffmpeg(cmd, *args, **kwargs) -> None:
         Path(cmd[-1].replace("%03d", "000")).write_bytes(b"fake")
 
+    class FakePopen:
+        def __init__(self, cmd, *args, **kwargs):
+            fake_ffmpeg(cmd)
+
+        def communicate(self, timeout=None):
+            return (b"", b"")
+
+        def kill(self):
+            pass
+
     monkeypatch.setattr(tempfile, "mkdtemp", make_temp_dir)
-    monkeypatch.setattr(whisper_service.subprocess, "run", fake_ffmpeg)
+    monkeypatch.setattr(whisper_service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(whisper_service, "TEMP_DIR", tmp_path / "temp-root")
 
     class FakeBatched:
         def __init__(self, model):
@@ -508,9 +683,14 @@ def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_pat
 
         return fake
 
-    def make_unload(name: str):
+    real_unload = whisper_service.WhisperService.unload_model
+
+    def make_unload(name: str, service):
         def fake():
             record(f"{name}:released")
+            # Still run the REAL unload_model() so this test does not bypass
+            # the stored-reference release being verified elsewhere.
+            real_unload(service)
 
         return fake
 
@@ -518,8 +698,8 @@ def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_pat
     second = whisper_service.WhisperService()
     monkeypatch.setattr(first, "_load_model", make_load("first", 0.10, first_loading))
     monkeypatch.setattr(second, "_load_model", make_load("second", 0))
-    monkeypatch.setattr(first, "unload_model", make_unload("first"))
-    monkeypatch.setattr(second, "unload_model", make_unload("second"))
+    monkeypatch.setattr(first, "unload_model", make_unload("first", first))
+    monkeypatch.setattr(second, "unload_model", make_unload("second", second))
 
     t1 = threading.Thread(target=first.transcribe, args=("in.wav",), name="first")
     t2 = threading.Thread(target=second.transcribe, args=("in.wav",), name="second")
