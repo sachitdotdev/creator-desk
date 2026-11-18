@@ -41,6 +41,7 @@ from app.core.paths import (
     RENDERS_DIR,
     SFX_DIR,
     SOURCES_DIR,
+    TEMP_DIR,
     TEMPLATES_DIR,
     TRANSCRIPTS_DIR,
 )
@@ -142,6 +143,38 @@ API_TITLE = "CreatorDesk AI"
 API_VERSION = "1.0.0"
 
 DATABASE_URL = f"sqlite:///{DB_PATH}"
+
+# --------------------------------------------------------------------------- Face tracking (Phase 6 prep)
+# All face-tracker behavior below is gated by config so it can be tuned or
+# disabled without changing the sendcmd file format that render_service consumes.
+FACE_TRACKER_ENABLED = os.getenv("FACE_TRACKER_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+FACE_MODEL_CONF = float(os.getenv("FACE_DETECTION_CONF", "0.25"))       # YOLO confidence threshold
+FACE_MODEL_IMGSZ = int(os.getenv("FACE_DETECTION_IMGSZ", "640"))        # YOLO inference size
+FACE_MODEL_UPSCALE_SMALL = os.getenv("FACE_DETECTION_UPSCALE_SMALL", "false").strip().lower() in ("1", "true", "yes", "on")
+# Detection stride: 1 = every frame (most reliable, slower), N = every N frames
+# with gaps filled by interpolation. Larger strides increase lost-tracking risk.
+FACE_DETECTION_STRIDE = int(os.getenv("FACE_DETECTION_STRIDE", "1"))
+
+# Shot-cut detection. Multi-camera podcasts cut hard between wide/single shots;
+# the tracker must reset its target at every cut so it never carries one shot's
+# x position into the next. Cuts are detected with ffmpeg scene detection and
+# cached so re-renders don't re-scan the source.
+FACE_CUT_THRESHOLD = float(os.getenv("FACE_CUT_THRESHOLD", "0.3"))      # ffmpeg scene detection threshold
+FACE_CUT_CACHE_DIR = TEMP_DIR / "cut_cache"                             # cached cut times per source/clip
+
+# Target selection: with several faces and no speaker info yet, prefer the
+# largest face and require it to persist MIN_DWELL seconds before switching
+# (hysteresis against wrong-target flipping). Phase 6 will replace this with
+# diarization-based speaker mapping; the hook is select_target() in face_tracker.
+FACE_TARGET_MIN_DWELL_S = float(os.getenv("FACE_TARGET_MIN_DWELL_S", "1.5"))
+FACE_TARGET_PREFER_LARGEST = os.getenv("FACE_TARGET_PREFER_LARGEST", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# Smoothing + loss handling. A critically damped spring follows the target with
+# a max pan speed; when detection is lost the last position is held for
+# HOLD_SECONDS then eased toward the shot's face center (or shot center).
+FACE_SMOOTHING_OMEGA = float(os.getenv("FACE_SMOOTHING_OMEGA", "6.0"))   # critically damped spring (rad/s)
+FACE_MAX_PAN_PX_PER_S = float(os.getenv("FACE_MAX_PAN_PX_PER_S", "500.0"))
+FACE_HOLD_SECONDS = float(os.getenv("FACE_HOLD_SECONDS", "1.0"))
 
 # Debug prints to verify paths
 print(f"DEBUG CONFIG: DATA_DIR={DATA_DIR}")
