@@ -32,6 +32,7 @@ from pathlib import Path
 from render_metrics import (
     SAFE_ZONE_BOTTOM_PCT,
     TARGET_WIDTH,
+    UNAVAILABLE,
     blackdetect_periods,
     caption_metrics,
     compute_crop_metrics,
@@ -260,15 +261,30 @@ def sample_times(duration: float, caption_times: list[float]) -> list[float]:
 
 
 def black_frame_report(render: Path) -> dict:
-    """Run ffmpeg blackdetect on the render and flag a black first frame."""
+    """Run ffmpeg analysis: frame-zero luma is the black-first-frame signal.
+
+    Black periods are kept as separate diagnostics. A failed/timed-out ffmpeg
+    scan is reported as ``unavailable`` rather than as an empty/false result.
+    """
     periods = blackdetect_periods(_ffmpeg(), str(render))
-    black_first_frame = any(p["black_start"] < 0.5 for p in periods)
     luma = first_frame_luma(_ffmpeg(), str(render))
+    if periods == UNAVAILABLE or luma == UNAVAILABLE:
+        return {
+            "status": UNAVAILABLE,
+            "periods": periods,
+            "black_first_frame": UNAVAILABLE,
+            "first_5_luma": luma,
+            "black_frame_count": UNAVAILABLE,
+            "black_frame_indices": UNAVAILABLE,
+        }
     # YAVG ~16 is an all-black frame; normal content sits well above 20.
+    # Only frame zero decides the first-frame flag; later black periods are
+    # reported separately in "periods".
     black_frames = [i for i, value in enumerate(luma) if value < 20.0]
     return {
+        "status": "ok",
         "periods": periods,
-        "black_first_frame": black_first_frame,
+        "black_first_frame": bool(luma) and luma[0] < 20.0,
         "first_5_luma": [round(v, 2) for v in luma],
         "black_frame_count": len(black_frames),
         "black_frame_indices": black_frames,
@@ -295,14 +311,23 @@ def caption_safe_zone(
     }
     if frame_height is None or frame_height <= 0:
         return result
-    margins = [d["margin_v"] for d in dialogues if d.get("margin_v") not in (None, 0)]
-    source = "dialogue"
-    if not margins and style_margin_v is not None:
-        margins = [style_margin_v]
-        source = "style"
-    if not margins:
+    # Resolve each dialogue's effective margin first: 0/missing means
+    # "inherit from style", while an explicit nonzero value is an override.
+    # Taking the min of only explicit values would hide an unsafe style margin.
+    effective: list[float] = []
+    sources: set[str] = set()
+    for d in dialogues:
+        value = d.get("margin_v")
+        if value not in (None, 0):
+            effective.append(float(value))
+            sources.add("dialogue")
+        elif style_margin_v is not None:
+            effective.append(float(style_margin_v))
+            sources.add("style")
+    if not effective:
         return result
-    closest = min(margins)
+    closest = min(effective)
+    source = "mixed" if len(sources) > 1 else next(iter(sources))
     pct = closest / float(frame_height) * 100.0
     result["bottom_margin_px"] = round(closest, 1)
     result["bottom_margin_pct"] = round(pct, 2)
@@ -328,7 +353,10 @@ def build_missed_frames_sheet(
     result = {"sheet": None, "count": 0, "timestamps": []}
     if not detection_records:
         return result
-    missed = [r for r in detection_records if not r.get("detected", False)]
+    # With FACE_DETECTION_STRIDE > 1 only sampled frames actually ran detection;
+    # unsampled frames have no detection result to report as "missed".
+    missed = [r for r in detection_records
+              if r.get("sampled", True) and not r.get("detected", False)]
     if not missed:
         return result
     result["count"] = len(missed)
@@ -474,15 +502,19 @@ def main() -> None:
         print(f"jumps         : {ft['jumps']}  (> {ft['jump_threshold_px']} px/frame)   jumps/min: {ft['jumps_per_min']}")
         print(f"target switches: {ft['target_switches']}  (> {ft['switch_threshold_px']} px/frame)")
         print(f"longest hold  : {ft['longest_hold_frames']} frames ({ft['longest_hold_seconds']}s)")
-        print(f"no detection  : {ft['no_detection_frames']} frames ({ft['no_detection_seconds']}s), fraction {ft['no_detection_fraction']} ({ft['no_detection_source']})")
+        print(f"no detection  : {ft['no_detection_frames']} frames ({ft['no_detection_seconds']}s), fraction {ft['no_detection_fraction']} "
+              f"of {ft['no_detection_population']} sampled frames ({ft['no_detection_source']})")
         print(f"1s travel     : {ft['travel_per_1s_window_px']} px   reversals: {ft['direction_reversals']}   fast sweeps: {ft['fast_sweeps']}")
         print(f"GLITCH SCORE  : {ft['glitch_score']}")
         print(f"face-in-crop  : violation fraction {crop_violation.get('violation_fraction')} over {crop_violation.get('samples')} samples ({crop_violation.get('violations')} violating), margin {crop_violation.get('margin_px')}px, longest violation {crop_violation.get('longest_violation')}")
     else:
         print(f"face tracking : unavailable ({ft.get('reason')})")
     bd = metrics["black_detect"]
-    print(f"black detect  : {len(bd['periods'])} period(s), black first frame: {bd['black_first_frame']}, "
-          f"black frames in first 5: {bd['black_frame_count']} {bd['black_frame_indices']} (YAVG {bd['first_5_luma']})")
+    if bd.get("status") == UNAVAILABLE:
+        print(f"black detect  : unavailable (periods={bd['periods']}, first luma={bd['first_5_luma']})")
+    else:
+        print(f"black detect  : {len(bd['periods'])} period(s), black first frame: {bd['black_first_frame']}, "
+              f"black frames in first 5: {bd['black_frame_count']} {bd['black_frame_indices']} (YAVG {bd['first_5_luma']})")
     sz = metrics["caption_safe_zone"]
     print(f"caption safe zone: bottom margin {sz['bottom_margin_pct']}% of height ({sz.get('margin_source')}), violation: {sz['safe_zone_violation']}")
     mf = metrics["missed_frames"]

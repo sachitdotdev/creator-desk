@@ -1,11 +1,14 @@
 """Unit tests for the render-review metrics using synthetic crop trajectories."""
+import subprocess
 import sys
+import types
 from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+import render_metrics
 from render_metrics import (
     CROP_MARGIN_PX,
     CropSample,
@@ -234,3 +237,88 @@ def test_glitch_score_includes_crop_violation_term():
 
 def test_crop_violation_default_margin_from_config_constant():
     assert CROP_MARGIN_PX > 0
+
+
+def test_reversals_resume_after_pause_outside_window():
+    # Two excursions separated by a 2.8 s pause. The extremum at t=3.0 s is
+    # outside the 2 s reversal window, but it must still become the reference
+    # for the next excursion so the second reversal is counted.
+    values = [0.0, 200.0, 0.0, 0.0, 200.0, 0.0]
+    times = [0.0, 0.1, 0.2, 3.0, 3.1, 3.2]
+    samples = [CropSample(t, 540.0 - x) for t, x in zip(times, values)]
+    m = compute_crop_metrics(
+        samples, reversal_threshold_px=100.0, reversal_window_seconds=2.0
+    )
+    assert m["direction_reversals"] == 2, m
+
+
+def test_no_detection_uses_only_sampled_frames():
+    samples = trajectory([100.0 + i * 5.0 for i in range(60)])
+    # FACE_DETECTION_STRIDE=3: only every third frame ran detection; ten of
+    # those twenty sampled frames found no face.
+    records = [
+        {"sampled": i % 3 == 0, "detected": not (i % 3 == 0 and i >= 30)}
+        for i in range(60)
+    ]
+    m = compute_crop_metrics(samples, detection_records=records)
+    assert m["no_detection_source"] == "tracker_sidecar"
+    assert m["no_detection_population"] == 20
+    assert m["no_detection_frames"] == 10
+    assert m["no_detection_fraction"] == 0.5
+
+
+def test_margin_equality_boundary_is_a_violation():
+    # half window = 540, margin 25 -> tol = 515. A bbox centre exactly 515 px
+    # from the crop centre touches the margin and must be a violation.
+    records = [{
+        "time": 0.0, "detected": True,
+        "bbox": [1010.0, 100.0, 1020.0, 300.0],  # centre 1015 = 500 + 515
+        "crop_center_x": 500.0, "target_x": 500.0,
+    }]
+    v = crop_violation_metrics(
+        records, scale_factor=1.0, target_width=1080.0, margin_px=25.0
+    )
+    assert v["violations"] == 1
+    assert v["violation_fraction"] == 1.0
+
+
+def test_first_frame_luma_stops_after_requested_frames(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="lavfi.signalstats.YAVG=16.10\nlavfi.signalstats.YAVG=78.50\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    values = render_metrics.first_frame_luma("ffmpeg", "render.mp4", n_frames=5)
+    assert values == [16.1, 78.5]
+    assert commands[0][commands[0].index("-frames:v") + 1] == "5"
+
+
+def test_ffmpeg_analysis_reports_unavailable_on_failure(monkeypatch):
+    def timed_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 120)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    assert render_metrics.first_frame_luma("ffmpeg", "render.mp4") == render_metrics.UNAVAILABLE
+    assert render_metrics.blackdetect_periods("ffmpeg", "render.mp4") == render_metrics.UNAVAILABLE
+
+    def failed(cmd, **kwargs):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="ffmpeg failed")
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    assert render_metrics.first_frame_luma("ffmpeg", "render.mp4") == render_metrics.UNAVAILABLE
+    assert render_metrics.blackdetect_periods("ffmpeg", "render.mp4") == render_metrics.UNAVAILABLE
+
+
+def test_ffmpeg_analysis_success_with_no_findings_is_empty_list(monkeypatch):
+    def ok(cmd, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", ok)
+    assert render_metrics.first_frame_luma("ffmpeg", "render.mp4") == []
+    assert render_metrics.blackdetect_periods("ffmpeg", "render.mp4") == []

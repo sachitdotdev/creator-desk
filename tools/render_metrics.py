@@ -113,6 +113,10 @@ CROP_VIOLATION_WEIGHT = 10.0
 
 _SENDCMD_RE = re.compile(r"^\s*([\d.]+)\s+overlay\s+x\s+(-?[\d.]+)")
 
+# Explicit status returned by the ffmpeg analysis helpers when the scan fails
+# or times out. A successful scan with no findings still returns an empty list.
+UNAVAILABLE = "unavailable"
+
 
 class CropSample(NamedTuple):
     time: float
@@ -184,7 +188,10 @@ def _count_reversals(
                 within_time = (times[i] - times[last_extremum_idx]) <= window_s
             if swing > threshold_px and within_time:
                 reversals += 1
-                last_extremum_idx = i
+            # The reference extremum advances even when the swing does not
+            # qualify (e.g. it followed a long pause), so counting can resume
+            # on the next excursion instead of being stuck on an old sample.
+            last_extremum_idx = i
     return reversals
 
 
@@ -285,6 +292,7 @@ def compute_crop_metrics(
             direction_reversals=0,
             fast_sweeps=0,
             no_detection_source="none",
+            no_detection_population=0,
         )
         return result
 
@@ -307,21 +315,26 @@ def compute_crop_metrics(
             i += 1
     longest = max((length + 1 for _, length in runs), default=0)
 
-    # Exact no-detection count from the tracker sidecar when available.
+    # Exact no-detection count from the tracker sidecar when available. With
+    # FACE_DETECTION_STRIDE > 1 only sampled frames actually ran detection, so
+    # they are the population (numerator AND denominator) for this metric.
     if detection_records:
-        no_detection_frames = sum(1 for r in detection_records if not r.get("detected", False))
-        no_detection_frames = min(no_detection_frames, n)
+        sampled = [r for r in detection_records if r.get("sampled", True)]
+        no_detection_frames = sum(1 for r in sampled if not r.get("detected", False))
+        no_detection_population = len(sampled)
         no_detection_source = "tracker_sidecar"
     else:
         no_detection_frames = min(
             sum(length + 1 for _, length in runs if length >= min_flat_run), n
         )
+        no_detection_population = n
         no_detection_source = "flat_run_heuristic"
 
     duration_seconds = (samples[-1].time - samples[0].time) or (n / fps)
     minutes = max(duration_seconds, 1.0) / 60.0
     jumps_per_min = jumps / minutes
-    no_detection_fraction = no_detection_frames / n
+    no_detection_fraction = (no_detection_frames / no_detection_population
+                             if no_detection_population else 0.0)
     longest_seconds = longest / fps
 
     travel_per_1s_window_px = _rolling_max_travel(crop_x, times, travel_window_seconds)
@@ -365,6 +378,7 @@ def compute_crop_metrics(
         direction_reversals=direction_reversals,
         fast_sweeps=fast_sweeps,
         no_detection_source=no_detection_source,
+        no_detection_population=no_detection_population,
         crop_violation=crop_violation,
         crop_violation_fraction=round(crop_violation_fraction, 4),
     )
@@ -420,7 +434,7 @@ def crop_violation_metrics(
         h = max(y2 - y1, 0.0)
         cx = float(r.get("crop_center_x") or r.get("target_x") or 0.0)
         inside = (fcx - w / 2.0) >= (cx - half) and (fcx + w / 2.0) <= (cx + half)
-        if abs(fcx - cx) > tol or not inside:
+        if abs(fcx - cx) >= tol or not inside:
             violating_flags.append(True)
         else:
             violating_flags.append(False)
@@ -476,34 +490,41 @@ def caption_metrics(dialogues: list[dict]) -> dict:
     }
 
 
-def first_frame_luma(ffmpeg: str, render_path: str, *, n_frames: int = 5, timeout: int = 120) -> list[float]:
+def first_frame_luma(ffmpeg: str, render_path: str, *, n_frames: int = 5, timeout: int = 120) -> list[float] | str:
     """Mean luma (YAVG) of the first ``n_frames`` via ffmpeg signalstats.
 
     Complements blackdetect: a single black frame at t=0 can hide behind
     blackdetect's minimum-duration threshold, but shows up here as YAVG ~16
     while the following frames sit around ~80.
+
+    Returns ``UNAVAILABLE`` on a failed/timed-out scan; an empty list means a
+    successful scan that found no luma samples.
     """
     import subprocess
 
-    select = f"select='lt(n\\,{max(1, n_frames)})',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-"
+    n = max(1, n_frames)
+    select = f"select='lt(n\\,{n})',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-"
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "info", "-i", str(render_path),
-           "-vf", select, "-an", "-f", "null", "-"]
+           "-frames:v", str(n), "-vf", select, "-an", "-f", "null", "-"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return UNAVAILABLE
+    if proc.returncode != 0:
+        return UNAVAILABLE
     return [float(line.split("=", 1)[1]) for line in (proc.stdout or "").splitlines()
             if line.startswith("lavfi.signalstats.YAVG=")]
 
 
-def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120, min_duration: float = 0.04, pix_th: float = 0.10) -> list[dict]:
+def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120, min_duration: float = 0.04, pix_th: float = 0.10) -> list[dict] | str:
     """Run ffmpeg blackdetect on ``render_path`` and return black periods.
 
     ``min_duration`` defaults to 0.04 s (one frame at 25 fps) so short black
     starts are caught; the historical 0.2 s default silently hid them.
 
     Each dict: ``black_start``, ``black_end``, ``black_duration`` (seconds).
-    Returns [] when ffmpeg reports no black periods or is unavailable.
+    Returns [] only for a successful scan with no findings; a failed or
+    timed-out scan returns ``UNAVAILABLE``.
     """
     import subprocess
 
@@ -516,7 +537,9 @@ def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120, mi
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return UNAVAILABLE
+    if proc.returncode != 0:
+        return UNAVAILABLE
     periods: list[dict] = []
     for line in (proc.stderr or "").splitlines():
         if "black_start" not in line:
