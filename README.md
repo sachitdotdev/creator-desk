@@ -32,7 +32,7 @@ CreatorDesk takes raw long-form video, transcribes it, uses a local LLM to find 
 - **💰 Monetization Ready:** Enforces a minimum 60-second duration for every clip to qualify for TikTok Creator Rewards.
 - **🎥 Dynamic Rendering:** Uses FFmpeg to crop to 9:16, apply a slow Ken Burns zoom, and burn in dynamic ASS karaoke captions.
 - **💻 Modern Dashboard:** A React + Vite + Tailwind CSS UI with live status polling and clip filtering.
-- **🤖 Autonomous Agents:** Configured with OpenHands `AGENTS.md`, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
+- **🤖 Autonomous Agents:** Configured with the root `AGENTS.md`, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
 
 ## 🏗️ Architecture Overview
 
@@ -153,7 +153,7 @@ at `GET /v1/models`.
 - **`backend/app/services/`**: Core business logic (llm, render, whisper)
 - **`frontend/src/`**: React components, API wrappers
 - **`.openhands/`**: Agent skills, setup scripts, hooks
-- **`AGENTS.md`**: AI agent configuration guide
+- **`AGENTS.md`**: root AI agent configuration guide
 
 ---
 
