@@ -78,6 +78,9 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `.github/workflows/ci.yml` — CI job `backend` (ruff + pytest on Python 3.12, lightweight deps only)
 - `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
 
+### Docs
+- `docs/ROADMAP.md`         — remaining work and known issues; roadmap source of truth
+
 ### Host-side scripts (run outside the app)
 - `start.bat`               — one-click launcher: health-checks then starts vLLM (8002),
   backend (8080) and frontend (5173) in minimized windows, in that order. Tunables
