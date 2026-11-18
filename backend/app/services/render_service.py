@@ -281,7 +281,14 @@ class RenderService:
         print(f"DEBUG render_clip: running ffmpeg, cwd={ffmpeg_cwd}", flush=True)
         print(f"DEBUG render_clip: ffmpeg command (space-separated): {' '.join(str(x) for x in cmd)}", flush=True)
         try:
-            subprocess.run([str(x) for x in cmd], check=True, timeout=120, cwd=ffmpeg_cwd)
+            # Full vertical encodes at preset slow can exceed the 120 s default;
+            # use the configured render timeout instead of a short one.
+            subprocess.run(
+                [str(x) for x in cmd],
+                check=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
+                cwd=ffmpeg_cwd,
+            )
         except subprocess.CalledProcessError as exc:
             print(f"DEBUG render_clip: ffmpeg failed: {exc}", flush=True)
             print(f"DEBUG render_clip: stderr={exc.stderr}", flush=True)
