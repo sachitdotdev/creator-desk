@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import random
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -240,3 +242,76 @@ def test_vibe_shapes_the_window_prompt(monkeypatch):
     )
     assert captured
     assert "Streamer Hype" in json.dumps(captured[0]["messages"])
+
+
+def _brute_force_clip_within_range(start, end, segments, lo, hi):
+    """Reference implementation: scan every (start, end) boundary pair."""
+    valid_starts = sorted({seg["start"] for seg in segments if lo <= seg["start"] <= hi})
+    valid_ends = sorted({seg["end"] for seg in segments if lo <= seg["end"] <= hi})
+    best = None
+    best_cost = float("inf")
+    for s in valid_starts:
+        for e in valid_ends:
+            if not (
+                clip_selector.CLIP_MIN_SECONDS
+                <= e - s
+                <= clip_selector.CLIP_MAX_SECONDS
+            ):
+                continue
+            cost = abs(s - start) + abs(e - end)
+            if cost < best_cost:
+                best_cost = cost
+                best = (s, e)
+    return best
+
+
+@pytest.mark.parametrize("clip_min,clip_max", [(3.0, 8.0), (30.0, 61.0)])
+def test_bounded_repair_matches_brute_force(monkeypatch, clip_min, clip_max):
+    """The bounded search must pick exactly what the quadratic scan picks."""
+    monkeypatch.setattr(clip_selector, "CLIP_MIN_SECONDS", clip_min)
+    monkeypatch.setattr(clip_selector, "CLIP_MAX_SECONDS", clip_max)
+    rng = random.Random(20261117)
+    non_empty = 0
+
+    for _ in range(400):
+        # Integer boundaries keep the duration comparisons exact.
+        cursor = 0
+        segments = []
+        for _ in range(rng.randint(2, 16)):
+            length = rng.randint(1, 6)
+            segments.append(
+                {"start": float(cursor), "end": float(cursor + length), "text": ""}
+            )
+            cursor += length
+        lo = float(rng.randint(0, cursor // 3))
+        hi = float(rng.randint(cursor // 2, cursor + 5))
+        start = float(rng.randint(0, cursor + 5))
+        end = float(rng.randint(0, cursor + 10))
+
+        expected = _brute_force_clip_within_range(start, end, segments, lo, hi)
+        assert clip_selector._clip_within_range(start, end, segments, lo, hi) == expected
+        non_empty += expected is not None
+
+    assert non_empty > 0, "random layouts never produced a repair to compare"
+
+
+def test_bounded_repair_is_fast_on_long_transcript():
+    """A 7,200-segment layout must repair well under a second."""
+    segments = [
+        {"start": float(i), "end": float(i + 1), "text": ""} for i in range(7200)
+    ]
+    lo, hi = clip_selector._usable_range(segments)
+
+    started = time.perf_counter()
+    result = clip_selector._clip_within_range(7150.0, 7165.0, segments, lo, hi)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0, f"boundary repair took {elapsed:.3f}s"
+    if result is not None:
+        s, e = result
+        assert lo <= s <= e <= hi
+        assert (
+            clip_selector.CLIP_MIN_SECONDS
+            <= e - s
+            <= clip_selector.CLIP_MAX_SECONDS
+        )

@@ -16,6 +16,7 @@ import json
 import re
 import time
 import traceback
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from typing import Any
 
@@ -346,19 +347,53 @@ def _clip_within_range(
     lo: float,
     hi: float,
 ) -> tuple[float, float] | None:
-    """Find a segment-aligned clip inside [lo, hi] closest to (start, end)."""
+    """Find a segment-aligned clip inside [lo, hi] closest to (start, end).
+
+    A fixed start only pairs with ends in
+    ``[start + CLIP_MIN_SECONDS, start + CLIP_MAX_SECONDS]``, so binary-search
+    that interval on the sorted ends instead of scanning the full cross product.
+    The pick (and the first-wins tie-breaking) is identical to the brute force.
+    """
     valid_starts = sorted({seg["start"] for seg in segments if lo <= seg["start"] <= hi})
     valid_ends = sorted({seg["end"] for seg in segments if lo <= seg["end"] <= hi})
     best: tuple[float, float] | None = None
     best_cost = float("inf")
     for s in valid_starts:
-        for e in valid_ends:
-            if not (CLIP_MIN_SECONDS <= e - s <= CLIP_MAX_SECONDS):
-                continue
-            cost = abs(s - start) + abs(e - end)
-            if cost < best_cost:
-                best_cost = cost
-                best = (s, e)
+        # Slightly widen the bisect window so float rounding at a bound cannot
+        # drop an end the exact duration check would accept, then narrow it
+        # back with that same predicate (valid ends form a contiguous range).
+        tol = 1e-9 * max(1.0, abs(s), abs(end))
+        lo_idx = bisect_left(valid_ends, s + CLIP_MIN_SECONDS - tol)
+        hi_idx = bisect_right(valid_ends, s + CLIP_MAX_SECONDS + tol)
+        while lo_idx < hi_idx and not (
+            CLIP_MIN_SECONDS <= valid_ends[lo_idx] - s <= CLIP_MAX_SECONDS
+        ):
+            lo_idx += 1
+        while hi_idx > lo_idx and not (
+            CLIP_MIN_SECONDS <= valid_ends[hi_idx - 1] - s <= CLIP_MAX_SECONDS
+        ):
+            hi_idx -= 1
+        if lo_idx >= hi_idx:
+            continue
+
+        # The closest end to the original candidate is next to its insertion
+        # point. Check the lower neighbour first so ties pick the smaller end,
+        # matching the sorted brute-force scan's first-wins behaviour.
+        idx = bisect_left(valid_ends, end, lo_idx, hi_idx)
+        chosen: float | None = None
+        chosen_dist = float("inf")
+        for j in (idx - 1, idx):
+            if lo_idx <= j < hi_idx:
+                distance = abs(valid_ends[j] - end)
+                if distance < chosen_dist:
+                    chosen_dist = distance
+                    chosen = valid_ends[j]
+        if chosen is None:
+            continue
+        cost = abs(s - start) + chosen_dist
+        if cost < best_cost:
+            best_cost = cost
+            best = (s, chosen)
     return best
 
 

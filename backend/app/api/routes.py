@@ -96,6 +96,23 @@ def _render_clip_in_thread(clip_id: int, video_id: int, template_id: int | None)
         render_db.close()
 
 
+def _select_clips_in_thread(transcript_segments, num_clips: int, vibe: str) -> list[dict]:
+    """Run the async clip selector on a worker thread, off the event loop.
+
+    Stage 2 (boundary snapping/repair) is CPU-bound and the selector opens its
+    own semaphore for the vLLM requests, so ``generate_clips`` must not run
+    inline in this async route. No request-scoped DB session crosses the thread
+    boundary; only transcript data goes in and plain clip dicts come back.
+    """
+    return asyncio.run(
+        LLMService().generate_clips(
+            transcript_segments=transcript_segments,
+            num_clips=num_clips,
+            vibe=vibe,
+        )
+    )
+
+
 async def _run_pipeline(video_id: str):
     print("DEBUG: Pipeline started", flush=True)
     db = SessionLocal()
@@ -142,11 +159,14 @@ async def _run_pipeline(video_id: str):
         db.commit()
 
         print("DEBUG: Starting LLM clip generation", flush=True)
-        # Call LLMService to generate clips
-        clips = await LLMService().generate_clips(
-            transcript_segments=whisper_result,
-            num_clips=5,
-            vibe="Streamer Hype",
+        # The selector does CPU-bound stage-2 work and its own vLLM request
+        # concurrency; keep all of it off the event loop (no DB session is
+        # shared with the worker thread).
+        clips = await asyncio.to_thread(
+            _select_clips_in_thread,
+            whisper_result,
+            5,
+            "Streamer Hype",
         )
 
         print("DEBUG: Starting rendering", flush=True)
