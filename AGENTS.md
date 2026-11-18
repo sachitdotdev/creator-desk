@@ -80,6 +80,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 
 ### Docs
 - `docs/ROADMAP.md`         — remaining work and known issues; roadmap source of truth
+- `docs/ASSETS.md`          — audio licensing policy and provenance of tracked audio
 
 ### Host-side scripts (run outside the app)
 - `start.bat`               — one-click launcher: health-checks then starts vLLM (8002),
