@@ -36,7 +36,7 @@ from app.core.processing_utils import (
     ensure_writable_dir,
     validate_media_file,
 )
-from app.services import llm_service, render_service, whisper_service
+from app.services import clip_selector, llm_service, render_service, whisper_service
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv"}
 
@@ -163,15 +163,19 @@ class BatchService:
         # Release the Whisper model + GPU memory after each transcription.
         self.whisper.reset()
 
-        # --- 2. Clip selection (LLM with fallback) --------------------------
+        # --- 2. Clip selection (same whole-video selector as the API route) ---
+        # clip_selector owns the windowed search, deterministic picking and the
+        # whole-video fallback; there is no second fallback implementation here.
         segments = result.to_dict().get("segments", [])
-        clips_data: list[dict[str, Any]] = []
-        try:
-            clips_data = asyncio.run(
-                self.llm.generate_clips(segments, num_clips=num_clips, vibe=vibe)
+        clips_data: list[dict[str, Any]] = asyncio.run(
+            clip_selector.generate_clips(
+                segments,
+                num_clips=num_clips,
+                vibe=vibe,
+                client=self.llm.client,
+                model=self.llm.model,
             )
-        except Exception:  # noqa: BLE001 - LLM failure falls back to clip heuristics
-            clips_data = self._fallback_clips(result, num_clips)
+        )
 
         # --- 3. Render each clip -------------------------------------------
         rendered: list[dict[str, Any]] = []
@@ -267,31 +271,6 @@ class BatchService:
         }
 
     # ------------------------------------------------------------------ private
-    @staticmethod
-    def _fallback_clips(result, num_clips: int) -> list[dict[str, Any]]:
-        segs = result.to_dict().get("segments", [])
-        if not segs:
-            return []
-        duration = result.duration or 60.0
-        step = duration / num_clips
-        clips: list[dict[str, Any]] = []
-        for i in range(num_clips):
-            s = i * step
-            e = min(s + step, duration)
-            if e - s < 10:
-                continue
-            clips.append({
-                "start": round(s, 1),
-                "end": round(e, 1),
-                "title": f"Clip {i+1}",
-                "hook": "Check this out",
-                "description": "Auto-generated clip.",
-                "hashtags": ["#shorts", "#viral"],
-                "vibe": "Custom",
-                "confidence": 0.5,
-            })
-        return clips
-
     @staticmethod
     def _clip_metadata(
         clip: models.Clip,

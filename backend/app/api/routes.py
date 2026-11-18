@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models
+from app.core.config import CLIP_MAX_SECONDS, CLIP_MIN_SECONDS
 from app.database import SessionLocal, get_db
 from app.services import music_service
 from app.services.llm_service import LLMService
@@ -153,7 +154,11 @@ async def _run_pipeline(video_id: str):
         clips = clips or []
         for idx, clip_data in enumerate(clips):
             start_t = float(clip_data.get("start", 0.0))
-            end_t = start_t + 61.0
+            # The selector snaps both boundaries to transcript segment edges;
+            # never force a fixed start+61s duration here (AGENTS.md rule 2/6).
+            end_t = float(clip_data.get("end", start_t + CLIP_MAX_SECONDS))
+            if end_t - start_t < CLIP_MIN_SECONDS:
+                end_t = start_t + CLIP_MIN_SECONDS
             clip = models.Clip(
                 video_id=video.id,
                 start_time=start_t,
@@ -195,7 +200,7 @@ async def _run_pipeline(video_id: str):
             # QC: Audit the rendered clip
             output_path = clip.output_path if clip.output_path else clip.file_path
             if output_path:
-                min_dur = 60.0
+                min_dur = CLIP_MIN_SECONDS
                 try:
                     # QC shells out to ffprobe and can block for seconds; keep
                     # it off the event loop so health checks and status polling
