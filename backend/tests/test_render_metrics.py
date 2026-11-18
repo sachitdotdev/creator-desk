@@ -7,9 +7,11 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from render_metrics import (
+    CROP_MARGIN_PX,
     CropSample,
     caption_metrics,
     compute_crop_metrics,
+    crop_violation_metrics,
     parse_sendcmd,
 )
 
@@ -142,3 +144,93 @@ def test_exact_no_detection_from_sidecar():
     # sidecar is authoritative when provided.
     m_heuristic = compute_crop_metrics(samples)
     assert m_heuristic["no_detection_frames"] == 0, m_heuristic
+
+
+def test_face_in_crop_clean_when_target_inside_window():
+    # Face centre dead-on the crop centre, bbox fully inside the window:
+    # no violation.
+    records = [
+        {"time": i / 30.0, "detected": True, "bbox": [x1, y1, x2, y2], "crop_center_x": cc, "target_x": cc}
+        for i, (x1, y1, x2, y2, cc) in enumerate([
+            (100.0, 200.0, 300.0, 400.0, 200.0),
+            (150.0, 180.0, 250.0, 380.0, 200.0),
+        ])
+    ]
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0, margin_px=25.0)
+    assert v["available"] is True
+    assert v["violations"] == 0
+    assert v["violation_fraction"] == 0.0
+    assert v["longest_violation"]["count"] == 0
+
+
+def test_face_in_crop_flags_bbox_outside_window():
+    # bbox centre (200, ...) with crop window half-width 540/1.0 = 540 ->
+    # window is [cc-540, cc+540]; cc=100 -> window [-440, 640]; bbox at 200 is
+    # inside, so instead push the bbox outside: cc=0, bbox centre 700 -> outside.
+    records = [
+        {"time": 0.0, "detected": True, "bbox": [650.0, 100.0, 750.0, 300.0], "crop_center_x": 0.0, "target_x": 0.0},
+    ]
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0, margin_px=25.0)
+    assert v["violations"] == 1
+    assert v["violation_fraction"] == 1.0
+    assert v["longest_violation"]["count"] == 1
+
+
+def test_face_in_crop_margin_touches_edge_is_violation():
+    # Window half-width = 540 source px (scale 1.0, target 1080). With margin 25,
+    # the centre must stay within 540-25 = 515 px of the window centre; a centre
+    # exactly at the window edge (540) is "touching" -> violation.
+    records = [
+        {"time": 1.0, "detected": True, "bbox": [40.0, 100.0, 60.0, 300.0], "crop_center_x": 500.0, "target_x": 500.0},
+    ]
+    # bbox centre = 50, |50-500| = 450 <= 515 -> inside, no violation.
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0, margin_px=25.0)
+    assert v["violations"] == 0
+    records[0]["bbox"] = [0.0, 100.0, 20.0, 300.0]  # centre = 10, |10-500|=490 <= 515 -> still inside
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0, margin_px=25.0)
+    assert v["violations"] == 0
+    records[0]["bbox"] = [0.0, 100.0, 1080.0, 300.0]  # centre = 540 -> touching right edge -> violation
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0, margin_px=25.0)
+    assert v["violations"] == 1
+
+
+def test_face_in_crop_undetected_is_violation():
+    records = [
+        {"time": 0.0, "detected": False, "bbox": None, "crop_center_x": None, "target_x": None},
+        {"time": 0.033, "detected": True, "bbox": [100.0, 100.0, 200.0, 300.0], "crop_center_x": 150.0, "target_x": 150.0},
+    ]
+    v = crop_violation_metrics(records, scale_factor=1.0, target_width=1080.0)
+    assert v["violations"] == 1
+    assert v["violation_fraction"] == 0.5
+
+
+def test_face_in_crop_no_records_no_violations():
+    v = crop_violation_metrics(None, scale_factor=1.0, target_width=1080.0)
+    assert v["available"] is False
+    assert v["violations"] == 0
+    assert v["violation_fraction"] == 0.0
+
+
+def test_glitch_score_includes_crop_violation_term():
+    samples = trajectory([0.0] * 30)
+    records = [
+        {"time": i / 30.0, "detected": True, "bbox": [700.0, 100.0, 900.0, 300.0], "crop_center_x": 0.0, "target_x": 0.0}
+        for i in range(30)
+    ]
+    m = compute_crop_metrics(samples, detection_records=records, crop_margin_px=25.0)
+    assert m["crop_violation_fraction"] > 0
+    assert m["crop_violation"]["violations"] > 0
+    # The crop term must be part of the glitch score.
+    base = (
+        1.0 * m["jumps_per_min"]
+        + 5.0 * m["target_switches"]
+        + 100.0 * m["no_detection_fraction"]
+        + 0.5 * (m["travel_per_1s_window_px"] / 1000.0)
+        + 2.0 * m["direction_reversals"]
+        + 3.0 * m["fast_sweeps"]
+    )
+    assert m["glitch_score"] > base
+
+
+def test_crop_violation_default_margin_from_config_constant():
+    assert CROP_MARGIN_PX > 0

@@ -416,6 +416,12 @@ def main() -> None:
         source_path, info["start_time"], detection_records, render, missed_sheet_path,
     )
 
+    crop_violation = crop.get("crop_violation") or {
+        "available": False, "source": "none", "margin_px": None,
+        "half_window_px": None, "violations": 0, "samples": 0,
+        "violation_fraction": 0.0, "longest_violation": {"start": None, "end": None, "duration_s": 0.0, "count": 0},
+    }
+
     metrics = {
         "render": str(render),
         "clip_id": info["clip_id"],
@@ -432,11 +438,12 @@ def main() -> None:
         "contact_sheet": str(sheet_path),
         "contact_sheet_frames": len(times),
         "face_tracking": crop,
+        "crop_violation": crop_violation,
         "glitch_formula": (
             "glitch_score = 1.0*jumps_per_min + 5.0*target_switches "
             "+ 100.0*no_detection_fraction + 0.5*(travel_per_1s_window_px/1000) "
-            "+ 2.0*direction_reversals + 3.0*fast_sweeps "
-            "(see tools/render_metrics.py)"
+            "+ 2.0*direction_reversals + 3.0*fast_sweeps + "
+            "10.0*crop_violation_fraction (see tools/render_metrics.py)"
         ),
         "black_detect": black,
         "caption_safe_zone": safe_zone,
@@ -458,6 +465,7 @@ def main() -> None:
         print(f"no detection  : {ft['no_detection_frames']} frames ({ft['no_detection_seconds']}s), fraction {ft['no_detection_fraction']} ({ft['no_detection_source']})")
         print(f"1s travel     : {ft['travel_per_1s_window_px']} px   reversals: {ft['direction_reversals']}   fast sweeps: {ft['fast_sweeps']}")
         print(f"GLITCH SCORE  : {ft['glitch_score']}")
+        print(f"face-in-crop  : violation fraction {crop_violation.get('violation_fraction')} over {crop_violation.get('samples')} samples ({crop_violation.get('violations')} violating), margin {crop_violation.get('margin_px')}px, longest violation {crop_violation.get('longest_violation')}")
     else:
         print(f"face tracking : unavailable ({ft.get('reason')})")
     bd = metrics["black_detect"]

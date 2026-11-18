@@ -72,6 +72,11 @@ Metrics definitions
   1000 px/s one-second travel adds 0.5, each reversal adds 2, and each fast
   sweep adds 3 -- so a clip that swings wildly but never formally "jumps"
   still surfaces in the score.
+
+  The glitch score also carries a face-in-crop term: ``CROP_VIOLATION_WEIGHT *
+  crop_violation_fraction`` where the fraction is the per-sample share of
+  timeline where the chosen target bbox centre is outside (or within the
+  safety margin of) the crop window.
 """
 from __future__ import annotations
 
@@ -95,6 +100,13 @@ REVERSAL_WINDOW_SECONDS = 2.0
 # seconds to count as a sweep (pan onto empty space).
 FAST_SWEEP_PX_PER_S = 400.0
 FAST_SWEEP_MIN_SECONDS = 0.5
+# Face-in-crop: how much slack (source px) the chosen target's bbox center may
+# sit inside the crop window before it is flagged. Violations are samples whose
+# chosen bbox center lies outside the crop window or touches/within the margin
+# of an edge.
+CROP_MARGIN_PX = 25.0
+# Glitch-score weight for face-in-crop violations (fraction of timeline).
+CROP_VIOLATION_WEIGHT = 10.0
 
 _SENDCMD_RE = re.compile(r"^\s*([\d.]+)\s+overlay\s+x\s+(-?[\d.]+)")
 
@@ -228,6 +240,7 @@ def compute_crop_metrics(
     fast_sweep_px_per_s: float = FAST_SWEEP_PX_PER_S,
     fast_sweep_min_seconds: float = FAST_SWEEP_MIN_SECONDS,
     detection_records: list[dict] | None = None,
+    crop_margin_px: float = CROP_MARGIN_PX,
 ) -> dict:
     """Compute face-tracking stability metrics from a crop trajectory.
 
@@ -316,6 +329,14 @@ def compute_crop_metrics(
         crop_x, times, fps, fast_sweep_px_per_s, fast_sweep_min_seconds
     )
 
+    crop_violation = crop_violation_metrics(
+        detection_records,
+        scale_factor=scale_factor,
+        target_width=target_width,
+        margin_px=crop_margin_px,
+    )
+    crop_violation_fraction = float(crop_violation.get("violation_fraction") or 0.0)
+
     glitch_score = (
         1.0 * jumps_per_min
         + 5.0 * switches
@@ -323,6 +344,7 @@ def compute_crop_metrics(
         + 0.5 * (travel_per_1s_window_px / 1000.0)
         + 2.0 * direction_reversals
         + 3.0 * fast_sweeps
+        + CROP_VIOLATION_WEIGHT * crop_violation_fraction
     )
 
     result.update(
@@ -340,7 +362,98 @@ def compute_crop_metrics(
         direction_reversals=direction_reversals,
         fast_sweeps=fast_sweeps,
         no_detection_source=no_detection_source,
+        crop_violation=crop_violation,
+        crop_violation_fraction=round(crop_violation_fraction, 4),
     )
+    return result
+
+
+def crop_violation_metrics(
+    detection_records: list[dict] | None,
+    *,
+    scale_factor: float | None = None,
+    target_width: float = TARGET_WIDTH,
+    margin_px: float = CROP_MARGIN_PX,
+) -> dict:
+    """Per-sample check that the chosen target's bbox centre is inside the crop.
+
+    The face crop is a square of side ``target_width / scale_factor`` source
+    pixels centred on the chosen target's centre (``crop_center_x`` /
+    ``target_x``). A sample is a *violation* when the chosen bbox centre lies
+    outside that window or within ``margin_px`` of an edge (touching counts as
+    a violation). Samples with no chosen bbox (no detection / lost target) are
+    violations too - the crop cannot be on a face that was never chosen.
+
+    Returns a dict with the violation fraction, the violating sample count and
+    the longest consecutive violation run (timestamps + duration).
+    """
+    sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
+    half = (float(target_width) / 2.0) / sf  # crop window half-size, source px
+    tol = max(half - float(margin_px), 0.0)
+
+    result = {
+        "available": bool(detection_records),
+        "source": "tracker_sidecar" if detection_records else "none",
+        "margin_px": float(margin_px),
+        "half_window_px": half,
+        "violations": 0,
+        "samples": 0,
+        "violation_fraction": 0.0,
+    }
+    if not detection_records:
+        return result
+
+    n = len(detection_records)
+    violating_flags: list[bool] = []
+    for r in detection_records:
+        bbox = r.get("bbox") if isinstance(r.get("bbox"), (list, tuple)) else None
+        if not bbox or len(bbox) < 4:
+            violating_flags.append(True)
+            continue
+        x1, y1, x2, y2 = (float(v) for v in bbox[:4])
+        fcx = (x1 + x2) / 2.0
+        fcy = (y1 + y2) / 2.0
+        w = max(x2 - x1, 0.0)
+        h = max(y2 - y1, 0.0)
+        cx = float(r.get("crop_center_x") or r.get("target_x") or 0.0)
+        inside = (fcx - w / 2.0) >= (cx - half) and (fcx + w / 2.0) <= (cx + half)
+        if abs(fcx - cx) > tol or not inside:
+            violating_flags.append(True)
+        else:
+            violating_flags.append(False)
+
+    violating_flags = violating_flags[:n]
+    n_viol = sum(1 for v in violating_flags if v)
+    result["violations"] = n_viol
+    result["samples"] = n
+    result["violation_fraction"] = (n_viol / n) if n else 0.0
+
+    # Longest consecutive run of violations (timestamps + duration).
+    best: dict = {"start": None, "end": None, "duration_s": 0.0, "count": 0}
+    run_start: float | None = None
+    run_end: float | None = None
+    run_count = 0
+    for i, flag in enumerate(violating_flags):
+        t = float(detection_records[i].get("time") or 0.0)
+        if flag:
+            if run_start is None:
+                run_start = t
+            run_end = t
+            run_count += 1
+        else:
+            if run_start is not None and run_end is not None:
+                dur = run_end - run_start
+                if dur > best["duration_s"] or best["count"] == 0:
+                    best = {"start": round(run_start, 3), "end": round(run_end, 3), "duration_s": dur, "count": run_count}
+            run_start = None
+            run_end = None
+            run_count = 0
+    if run_start is not None and run_end is not None:
+        dur = run_end - run_start
+        if dur > best["duration_s"] or best["count"] == 0:
+            best = {"start": round(run_start, 3), "end": round(run_end, 3), "duration_s": dur, "count": run_count}
+
+    result["longest_violation"] = best
     return result
 
 
@@ -360,8 +473,11 @@ def caption_metrics(dialogues: list[dict]) -> dict:
     }
 
 
-def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120) -> list[dict]:
+def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120, min_duration: float = 0.04, pix_th: float = 0.10) -> list[dict]:
     """Run ffmpeg blackdetect on ``render_path`` and return black periods.
+
+    ``min_duration`` defaults to 0.04 s (one frame at 25 fps) so short black
+    starts are caught; the historical 0.2 s default silently hid them.
 
     Each dict: ``black_start``, ``black_end``, ``black_duration`` (seconds).
     Returns [] when ffmpeg reports no black periods or is unavailable.
@@ -371,7 +487,7 @@ def blackdetect_periods(ffmpeg: str, render_path: str, *, timeout: int = 120) ->
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "info", "-an",
         "-i", str(render_path),
-        "-vf", "blackdetect=d=0.2:pix_th=0.10",
+        "-vf", f"blackdetect=d={min_duration}:pix_th={pix_th}",
         "-f", "null", "-",
     ]
     try:
