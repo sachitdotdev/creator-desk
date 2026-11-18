@@ -192,6 +192,9 @@ BGM files are git-ignored; document license/source in a sidecar JSON.
 
 # Testing & Verification
 
+Tooling: Check Context7 before guessing library or framework APIs. The GitHub
+MCP server can open PRs and read CodeRabbit review threads on this repo.
+
 Before declaring a task complete:
 1. From `backend/`: `ruff check .` and `python -m pytest tests -q`.
 2. For frontend changes: `npx tsc --noEmit`.
