@@ -81,6 +81,7 @@ Metrics definitions
 from __future__ import annotations
 
 import re
+import statistics
 from typing import NamedTuple
 
 JUMP_THRESHOLD_PX = 50.0
@@ -356,17 +357,30 @@ def compute_crop_metrics(
     # Exact no-detection count from the tracker sidecar when available. With
     # FACE_DETECTION_STRIDE > 1 only sampled frames actually ran detection, so
     # they are the population (numerator AND denominator) for this metric.
+    # Detection runs only every FACE_DETECTION_STRIDE frames. A failed sampled
+    # frame therefore covers the sampling interval (stride/fps), not 1/fps.
+    # Derive that cadence from the sampled timestamps when the sidecar has them.
+    sampling_interval_s = 1.0 / fps
     if detection_records:
         sampled = [r for r in detection_records if r.get("sampled", True)]
         no_detection_frames = sum(1 for r in sampled if not r.get("detected", False))
         no_detection_population = len(sampled)
         no_detection_source = "tracker_sidecar"
+        sample_times = [
+            float(r.get("time")) for r in sampled
+            if isinstance(r.get("time"), (int, float))
+        ]
+        gaps = [b - a for a, b in zip(sample_times, sample_times[1:]) if b > a]
+        if gaps:
+            sampling_interval_s = statistics.median(gaps)
+        no_detection_seconds_value = no_detection_frames * sampling_interval_s
     else:
         no_detection_frames = min(
             sum(length + 1 for _, length in runs if length >= min_flat_run), n
         )
         no_detection_population = n
         no_detection_source = "flat_run_heuristic"
+        no_detection_seconds_value = no_detection_frames / fps
 
     duration_seconds = (samples[-1].time - samples[0].time) or (n / fps)
     minutes = max(duration_seconds, 1.0) / 60.0
@@ -407,7 +421,8 @@ def compute_crop_metrics(
         longest_hold_frames=longest,
         longest_hold_seconds=round(longest_seconds, 3),
         no_detection_frames=no_detection_frames,
-        no_detection_seconds=round(no_detection_frames / fps, 3),
+        no_detection_seconds=round(no_detection_seconds_value, 3),
+        no_detection_sampling_interval_s=round(sampling_interval_s, 5),
         jumps_per_min=round(jumps_per_min, 3),
         no_detection_fraction=round(no_detection_fraction, 4),
         glitch_score=round(glitch_score, 3),

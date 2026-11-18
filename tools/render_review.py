@@ -165,14 +165,34 @@ def parse_ass(path: Path) -> list[dict]:
     return dialogues
 
 
-def find_ass(clip_id: int | None, explicit: str | None) -> Path | None:
+def find_ass(clip_id: int | None, explicit: str | None,
+             render: Path | str | None = None) -> Path | None:
+    """Resolve the ASS file for a render without silently choosing a stale one.
+
+    Explicit ``--ass`` always wins. Otherwise candidates are matched by clip
+    id (``subs_<clip_id>_*.ass``) and, when a render name is given, a candidate
+    whose filename carries the render's own token is preferred. More than one
+    remaining candidate is an error: the caller must disambiguate with --ass.
+    """
     if explicit:
         return Path(explicit)
+    candidates: list[Path] = []
     if clip_id is not None:
-        matches = sorted(RENDERS_DIR.glob(f"subs_{clip_id}_*.ass"))
-        if matches:
-            return matches[-1]
-    return None
+        candidates = sorted(RENDERS_DIR.glob(f"subs_{clip_id}_*.ass"))
+    if not candidates:
+        return None
+    if render is not None:
+        render_token = Path(render).stem.rsplit("_", 1)[-1]
+        token_matches = [p for p in candidates if p.stem.endswith(f"_{render_token}")]
+        if len(token_matches) == 1:
+            return token_matches[0]
+    if len(candidates) > 1:
+        names = ", ".join(str(p) for p in candidates)
+        raise RuntimeError(
+            f"multiple ASS subtitle candidates for clip {clip_id}: {names}. "
+            "Pass --ass explicitly to select one; refusing to pick one silently."
+        )
+    return candidates[0]
 
 
 def style_margin_v(path: Path) -> float | None:
@@ -409,7 +429,7 @@ def main() -> None:
     info = db_lookup(args.clip_id, render)
     probe = probe_media(render)
 
-    ass_path = find_ass(info["clip_id"], args.ass)
+    ass_path = find_ass(info["clip_id"], args.ass, render)
     ass_dialogues = parse_ass(ass_path) if ass_path and ass_path.exists() else []
     captions = caption_metrics(ass_dialogues) if ass_dialogues else {
         "num_captions": None, "avg_words_per_caption": None, "caption_change_times": [],

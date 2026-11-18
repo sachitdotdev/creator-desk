@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -62,6 +64,27 @@ def test_missed_frames_reports_fallback_without_reading_old_detections(monkeypat
     assert result["tracker_fallback"] is True
     assert render_review.TRACKER_FALLBACK_MESSAGE in result["reason"]
     assert called == []
+
+
+def test_find_ass_requires_explicit_with_multiple_candidates(monkeypatch, tmp_path):
+    monkeypatch.setattr(render_review, "RENDERS_DIR", tmp_path)
+    (tmp_path / "subs_4_aaaaaaaa.ass").write_text("", encoding="utf-8")
+    (tmp_path / "subs_4_bbbbbbbb.ass").write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="--ass") as exc:
+        render_review.find_ass(4, None)
+    assert "aaaaaaaa" in str(exc.value) and "bbbbbbbb" in str(exc.value)
+
+    explicit = tmp_path / "subs_4_cccccccc.ass"
+    explicit.write_text("", encoding="utf-8")
+    assert render_review.find_ass(4, str(explicit)) == explicit
+
+
+def test_find_ass_uses_render_name_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(render_review, "RENDERS_DIR", tmp_path)
+    (tmp_path / "subs_4_aaaaaaaa.ass").write_text("", encoding="utf-8")
+    (tmp_path / "subs_4_bbbbbbbb.ass").write_text("", encoding="utf-8")
+    chosen = render_review.find_ass(4, None, tmp_path / "clip_4_bbbbbbbb.mp4")
+    assert chosen.name == "subs_4_bbbbbbbb.ass"
 
 
 def test_main_reports_tracker_fallback(monkeypatch, tmp_path, capsys):

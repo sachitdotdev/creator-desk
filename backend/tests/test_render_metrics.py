@@ -280,6 +280,24 @@ def test_no_detection_uses_only_sampled_frames():
     assert m["no_detection_fraction"] == 0.5
 
 
+def test_no_detection_seconds_uses_sampling_cadence():
+    # 60 frames @ 30 fps, FACE_DETECTION_STRIDE=3: 20 sampled frames, all
+    # failing detection, spanning 0.0-1.9 s. The old frames/fps formula gave
+    # 0.667 s; the true missed span is 2.0 s (20 * 0.1 s sampling interval).
+    samples = trajectory([100.0 + i * 5.0 for i in range(60)])
+    records = [
+        {"time": round(i / 30.0, 4), "sampled": i % 3 == 0,
+         "detected": i % 3 != 0}
+        for i in range(60)
+    ]
+    m = compute_crop_metrics(samples, detection_records=records)
+    assert m["no_detection_frames"] == 20
+    assert m["no_detection_population"] == 20
+    assert m["no_detection_fraction"] == 1.0
+    assert m["no_detection_seconds"] == 2.0, m
+    assert abs(m["no_detection_sampling_interval_s"] - 0.1) < 1e-6
+
+
 def test_margin_equality_boundary_is_a_violation():
     # half window = 540, margin 25 -> tol = 515. A bbox centre exactly 515 px
     # from the crop centre touches the margin and must be a violation.
