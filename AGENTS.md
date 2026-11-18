@@ -24,7 +24,7 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ### Backend (Python / FastAPI)
 - `backend/app/main.py`                    — FastAPI app entry; mounts `/api`, `/renders`, `/sources`
 - `backend/app/api/routes.py`              — HTTP routes (videos, clips, templates, accounts, `/api/music`)
-- `backend/app/core/config.py`             — settings + ffmpeg binary resolution; LLM context limits (`LLM_MAX_MODEL_LEN`, `LLM_MAX_NUM_SEQS`) and `CLIP_*` window/gap/length knobs live here; face-tracking knobs (`FACE_*`, `FACE_CUT_*`) also live here
+- `backend/app/core/config.py`             — settings + ffmpeg binary resolution; LLM context limits (`LLM_MAX_MODEL_LEN`, `LLM_MAX_NUM_SEQS`) and `CLIP_*` window/gap/length knobs live here; face-tracking knobs (`FACE_*`, `FACE_CUT_*`) and caption safe-zone knobs (`CAPTION_SAFE_BOTTOM_PCT` default `0.18`, `CAPTION_SAFE_ZONE_ENFORCE` default true) also live here
 - `backend/app/core/gpu_lock.py`           — process-wide single-tenant GPU lock (sync + async)
 - `backend/app/core/paths.py`              — single source of truth for filesystem paths
 - `backend/app/core/processing_utils.py`   — robust media processing utilities (`run_subprocess`)
@@ -34,8 +34,8 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/services/whisper_service.py`    — faster-whisper transcription
 - `backend/app/services/llm_service.py`        — vLLM (OpenAI-compatible) client at http://127.0.0.1:8002/v1, model `meissa-7b-awq`; `generate_clips()` delegates to `clip_selector`
 - `backend/app/services/clip_selector.py`      — whole-video clip selection: windowed LLM candidate search (up to 4 concurrent windows) + deterministic gap/bucket/snapped-boundary picking; shared by `routes._run_pipeline` and `batch_service`
-- `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder
-- `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook
+- `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder. `center_crop` uses the scaled video (not a black colour source) as overlay main, seeds the initial overlay x from the first sendcmd command, and crops the composited frame back to `1080x1920` before captions
+- `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook, render-time caption bottom-margin clamp (`effective_caption_margin_v`, never edits stored templates)
 - `backend/app/services/face_tracker.py`       — YOLOv8 face detection with cut reset, target hysteresis, spring smoothing, hold-then-ease loss handling; writes a per-frame detection sidecar (`.track.json`) next to each sendcmd
 - `backend/app/services/audio_compiler.py`     — audio graph: SFX layering, BGM ducking, limiter
 - `backend/app/services/audio_loudness.py`     — EBU R128 two-pass loudnorm
@@ -74,12 +74,16 @@ or `ls -R` at the start of a task.** Open only the files you need.
   in this tracked document.
 
 ### Tests & tooling
-- `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates, face tracker)
-- `tools/render_metrics.py` — pure stability metrics for crop trajectories: jumps, switches, holds, no-detection, **travel per rolling 1 s window, direction reversals, fast sweeps**, reweighted `glitch_score`; unit-tested with synthetic trajectories
-- `tools/render_review.py`  — per-render review: contact sheet, **black-frame detection (ffmpeg blackdetect) + black first frame flag**, **caption safe-zone check (bottom margin % of height)**, **missed-frames contact sheet** (up to 16 no-face frames from the tracker sidecar with timestamps), `metrics.json` echoing all metrics
+- `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates, face tracker, **caption safe zone**, **render metrics**, **edit compiler**)
+- `tools/render_metrics.py` — pure stability metrics for crop trajectories: jumps, switches, holds, no-detection, **travel per rolling 1 s window, direction reversals, fast sweeps**, **face-in-crop violation fraction + longest violation timestamps** (added to `glitch_score` at weight 10), reweighted `glitch_score`; **blackdetect (`d=0.04`, `pix_th=0.10`)** and **first-5-frame mean luma via signalstats**; `SAFE_ZONE_BOTTOM_PCT = 0.18` mirror of the render clamp; unit-tested with synthetic trajectories
+- `tools/render_review.py`  — per-render review: contact sheet, **black-frame detection + black first frame flag + first-5 luma / black frame count**, **face-in-crop violation report**, **caption safe-zone check (bottom margin % of height, threshold 18%)**, **missed-frames contact sheet** (up to 16 no-face frames from the tracker sidecar with timestamps), `metrics.json` echoing all metrics
 - `backend/ruff.toml`       — ruff config (FastAPI `Depends` allowed in defaults)
 - `.github/workflows/ci.yml` — CI job `backend` (ruff + pytest on Python 3.12, lightweight deps only)
 - `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
+
+Render-stability notes:
+- Black first frame: a colour-source overlay main produced a black frame 0; the video-main graph also needed a final `crop=1080:1920:0:0` (the scaled source is 3413 px wide) plus a seeded initial overlay x. `-ss` stays before `-i` with no `-copyts`; fresh renders match the source at offset `+0.00 s` (crop-fidelity SSIM ≥ 0.9 at 9/10 sample times).
+- The tracker sidecar records `detected`, `bbox`, `conf`, `crop_center_x` and `target_x` per frame. `crop_violation_metrics()` checks that the chosen target's bbox centre stays inside the crop window with a configurable margin (25 px).
 
 ### Docs
 - `docs/ROADMAP.md`         — remaining work and known issues; roadmap source of truth
