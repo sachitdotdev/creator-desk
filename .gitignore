@@ -61,6 +61,13 @@ backend/assets/music/*.[wW][aA][vV]
 backend/assets/music/*.[mM]4[aA]
 backend/assets/music/*.[oO][gG][gG]
 
+# The Suno-generated lofi.mp3 must never be re-added (still in git history: 1525472).
+backend/assets/music/lofi.mp3
+
+# Exception: one original, generated placeholder BGM IS committed on purpose.
+# Regenerate it with tools/generate_sfx.py; license is in its .json sidecar.
+!backend/assets/music/ambient-pad.mp3
+
 # Generated test SFX (case-insensitive); sidecar .json stays tracked.
 backend/assets/sfx/*.[wW][aA][vV]
 backend/assets/sfx/*.[mM][pP]3
