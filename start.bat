@@ -105,6 +105,15 @@ for /f %%T in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixT
 rem --- 1. LLM server ---------------------------------------------------------
 call :health "%LLM_HEALTH%"
 if "!SVC_UP!"=="1" goto llm_skip
+if not exist "%LLM_SCRIPT%" (
+    echo.
+    echo ERROR: vLLM runtime not found: %LLM_SCRIPT%
+    echo   The services\vllm directory is gitignored because it is too large
+    echo   for git, so a fresh clone does not include it. See the "LLM model
+    echo   setup" section of README.md, then place the runtime there before
+    echo   running start.bat.
+    exit /b 1
+)
 echo [1/3] Starting vLLM on port %LLM_PORT% ...
 del "%RUN_DIR%\llm.pid" >nul 2>&1
 call :launch llm "%LLM_WRAPPER%"

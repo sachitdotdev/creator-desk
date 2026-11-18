@@ -129,7 +129,21 @@ calibration dataset is `neuralmagic/calibration`). To obtain it:
    `output_dir` in `backend/quantize_meissa.py`, then run
    `python backend/quantize_meissa.py` (about 10-15 minutes). It writes the
    `meissa-7b-awq` directory.
-3. Point `VLLM_MODEL` at that directory (or rely on the fallback) and run
+3. **Ensure the local vLLM runtime is present (prerequisite).** The
+   `services\vllm` directory — containing `start_vllm.bat` and the bundled
+   Python/vLLM runtime — is **gitignored** because it is too large for git
+   (`services/vllm/` in `.gitignore`). A fresh clone therefore does not include
+   it, and it must be present at the repository root before you run `start.bat`;
+   otherwise the launcher has no vLLM server to start. The layout expected by
+   `start.bat` is `services\vllm\start_vllm.bat`, which launches vLLM **0.27.1**
+   from a bundled **Python 3.13** on native Windows (no WSL/Docker) and serves
+   the OpenAI-compatible API on port **8002**.
+
+   > **Runtime setup: TBD** — the exact procedure for creating this bundled
+   > runtime (install commands / bootstrap script) is not documented in this
+   > repository. No install commands are given here; only the facts stated
+   > above are known.
+4. Point `VLLM_MODEL` at that directory (or rely on the fallback) and run
    `start.bat`.
 
 > **Download link for the pre-quantized `meissa-7b-awq` build: TBD** — the AWQ
