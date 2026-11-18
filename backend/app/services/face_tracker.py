@@ -18,7 +18,7 @@ tuned or disabled without touching this file:
 
 * ``FACE_TRACKER_ENABLED``            - master switch (false => center crop)
 * ``FACE_MODEL_CONF / FACE_MODEL_IMGSZ`` - YOLO conf / inference size
-* ``FACE_MODEL_UPSCALE_SMALL``        - 2x upscale small frames before detect
+* ``FACE_MODEL_UPSCALE_SMALL``        - upscale small frames before detect
 * ``FACE_DETECTION_STRIDE``           - detect every N frames (1 = every frame)
 * ``FACE_CUT_THRESHOLD``              - ffmpeg scene-detection threshold
 * ``FACE_TARGET_MIN_DWELL_S``         - hysteresis dwell before switching faces
@@ -123,13 +123,13 @@ def detect_cuts(video_path: str, start: float, duration: float,
     cache = FACE_CUT_CACHE_DIR / (key.replace(os.sep, "_") + ".json")
     if cache.exists():
         try:
-            return [float(x) for x in json.loads(cache.read_text())]
+            return sorted(float(x) for x in json.loads(cache.read_text()))
         except (ValueError, OSError):
             pass
 
     cuts: list[float] = []
     cmd = [
-        _ffmpeg(), "-hide_banner", "-loglevel", "error", "-an",
+        _ffmpeg(), "-hide_banner", "-loglevel", "info", "-nostats", "-an",
         "-ss", f"{max(0.0, start):.3f}", "-i", str(video_path), "-t", f"{duration:.3f}",
         "-vf", f"select='gt(scene,{threshold})',showinfo",
         "-f", "null", "-",
@@ -138,7 +138,7 @@ def detect_cuts(video_path: str, start: float, duration: float,
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired):
         proc = None
-    if proc is not None:
+    if proc is not None and proc.returncode == 0:
         for line in proc.stderr.splitlines():
             if "pts_time" in line and "n:" in line:
                 for part in line.split():
@@ -153,26 +153,34 @@ def detect_cuts(video_path: str, start: float, duration: float,
                         if 0.0 <= cut <= duration:
                             cuts.append(cut)
                         break
-    try:
-        cache.write_text(json.dumps(cuts))
-    except OSError:
-        pass
-    return sorted(cuts)
+        cuts = sorted(cuts)
+        # Only a completed, successful scan is cacheable: a failed/timed-out
+        # ffmpeg run must never poison re-renders with an empty cut list.
+        try:
+            cache.write_text(json.dumps(cuts))
+        except OSError:
+            pass
+    return cuts
 
 
 def _upscale_if_small(frame, min_side: int = 640):
-    """Optionally upscale a frame so small faces reach imgsz scale."""
+    """Optionally upscale a frame so small faces reach imgsz scale.
+
+    Returns ``(frame, scale)`` where ``scale`` is the applied factor (1.0 when
+    no upscale happened). Callers divide detections by it to keep coordinates
+    in source pixels.
+    """
     if not FACE_MODEL_UPSCALE_SMALL:
-        return frame
+        return frame, 1.0
     try:
         import cv2  # heavy, optional; only imported when upscaling is on
     except Exception:  # noqa: BLE001 - degrade gracefully when cv2 is missing
-        return frame
+        return frame, 1.0
     h, w = frame.shape[:2]
     if min(h, w) >= min_side:
-        return frame
+        return frame, 1.0
     scale = min_side / float(min(h, w))
-    return cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+    return cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR), scale
 
 
 def _center(face: dict) -> tuple[float, float]:
@@ -202,20 +210,31 @@ def _select_target(faces: list[dict], now: float, state: dict) -> dict | None:
         state["since"] = now
         return best
 
-    # Same face as the current target? (center within SAME_TARGET_PX).
-    # Return the CURRENT detection so the crop follows the face, but keep the
-    # dwell clock running (we are not switching identity).
-    if math.dist(_center(best), _center(cur)) <= SAME_TARGET_PX:
-        return best
+    # Match the stored target to the CURRENT detections by nearest center so a
+    # drifting face keeps its identity instead of being frozen at its first
+    # bbox. ``nearest`` is the face closest to the last matched position.
+    cur_cx, cur_cy = _center(cur)
+    nearest = min(faces, key=lambda f: math.dist(_center(f), (cur_cx, cur_cy)))
+    matched = math.dist(_center(nearest), (cur_cx, cur_cy)) <= SAME_TARGET_PX
 
-    # Different face is largest: switch only if clearly better AND persisted.
-    if (FACE_TARGET_PREFER_LARGEST
+    # A different face must be clearly larger AND persistent before we switch.
+    # Check this before following ``nearest`` so the existing dwell rule stays
+    # intact when both faces remain in frame.
+    if (best is not nearest
+            and FACE_TARGET_PREFER_LARGEST
             and best["area"] > cur["area"] * SWITCH_MARGIN
             and (now - state["since"]) >= FACE_TARGET_MIN_DWELL_S):
         state["target"] = best
         state["since"] = now
         return best
-    return cur  # hysteresis: keep the current target
+
+    if matched:
+        # Same identity: store this frame's detection as the new target so the
+        # crop follows the face, but leave the dwell clock untouched.
+        state["target"] = nearest
+        return nearest
+
+    return cur  # hysteresis: keep the current target until the switch qualifies
 
 
 def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080, debug: bool = False) -> bool:
@@ -233,7 +252,12 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
 
         if not _model_file_exists():
             print(f"DEBUG: YOLO model not found at {FACE_MODEL}!")
+            _write_center_sendcmd(sendcmd_path, start_time, duration, target_width)
             return False
+
+        # CPU-only scene scan: keep it outside the GPU lock so other VRAM
+        # stages are not blocked while ffmpeg inspects the source.
+        cuts = detect_cuts(video_path, start_time, duration, FACE_CUT_THRESHOLD)
 
         from ultralytics import YOLO
         # Model load + YOLO inference are the only VRAM-touching steps here.
@@ -244,6 +268,7 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
 
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
+                    _write_center_sendcmd(sendcmd_path, start_time, duration, target_width)
                     return False
 
                 cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
@@ -260,7 +285,6 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
                 cx_min = crop_window_half
                 cx_max = original_width - crop_window_half
 
-                cuts = detect_cuts(video_path, start_time, duration, FACE_CUT_THRESHOLD)
                 cut_idx = 0
 
                 # Per-shot face-center history (loss-handling ease target).
@@ -296,12 +320,15 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
                     chosen: dict | None = None
                     faces: list[dict] = []
                     if frame_count % stride == 0:
-                        inf_frame = _upscale_if_small(frame)
+                        inf_frame, scale = _upscale_if_small(frame)
                         results = model(inf_frame, verbose=False, device="cuda",
                                         imgsz=FACE_MODEL_IMGSZ, conf=FACE_MODEL_CONF)
                         for r in results:
                             for box in r.boxes:
-                                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                                # Detection coords are in inference pixels;
+                                # map them back to source pixels (also used by
+                                # the sidecar bbox) before tracking.
+                                x1, y1, x2, y2 = (v / scale for v in box.xyxy[0].tolist())
                                 area = (x2 - x1) * (y2 - y1)
                                 conf = float(box.conf[0].item()) if box.conf is not None else 0.0
                                 faces.append({
