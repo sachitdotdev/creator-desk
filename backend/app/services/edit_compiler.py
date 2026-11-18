@@ -1,5 +1,6 @@
 import logging
 import math
+import re
 import textwrap
 from pathlib import Path
 
@@ -15,6 +16,27 @@ _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 # timestamps can legitimately be much larger than this (e.g. a clip cut from
 # hour 2 of a stream), so the ceiling applies after subtracting clip_start.
 MAX_SFX_START_SECONDS = 3600.0
+
+_SENDCMD_RE = re.compile(r"^\s*[\d.]+\s+overlay\s+x\s+(-?[\d.]+)")
+
+
+def first_sendcmd_overlay_x(sendcmd_path: str) -> str:
+    """Return the overlay x of the first sendcmd command (e.g. ``-981.32``).
+
+    The FFmpeg ``sendcmd`` filter does not reliably apply a command whose
+    timestamp equals the first frame's timestamp, so the filtergraph seeds the
+    initial overlay position from this first command instead of relying on the
+    sendcmd queue alone. Returns ``"0"`` when the file is missing/unparseable.
+    """
+    try:
+        text = Path(sendcmd_path).read_text(encoding="utf-8")
+    except OSError:
+        return "0"
+    for line in text.splitlines():
+        match = _SENDCMD_RE.match(line)
+        if match:
+            return match.group(1)
+    return "0"
 
 
 def resolve_sfx_path(op: dict) -> str | None:
@@ -120,7 +142,15 @@ def compile_plan(
     
     # 1. Base Layout
     if layout == "center_crop":
-        base = f"[0:v]scale=-1:1920[scaled];color=black:s=1080x1920[bg];[scaled]sendcmd=f='{sendcmd_path}'[scaled_cmd];[bg][scaled_cmd]overlay=x=0:y=0:shortest=1[vstack]"
+        # The overlay's MAIN input must be the video stream itself ([0:v] split
+        # -> main + overlay). A generated colour source as the overlay main makes
+        # the first composited frame come out black (verified with ffmpeg: frame 0
+        # of the composite is black with a colour source main, real content with a
+        # video main). The crop itself is applied by the sendcmd overlay x below;
+        # the filtergraph seeds the initial overlay x from the first sendcmd
+        # position because sendcmd does not reliably apply a t=0 command to frame 0.
+        initial_overlay_x = first_sendcmd_overlay_x(sendcmd_path)
+        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack]"
     else:
         base = "[0:v]split=2[v1][v2];[v1]crop=iw:ih/2:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[v2]crop=iw:ih/2:0:ih/2,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vstack]"
     
