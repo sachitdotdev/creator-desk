@@ -2,7 +2,8 @@
 
 Creator Desk is an autonomous, AI-powered short-form video editing pipeline.
 It takes raw uploaded videos, transcribes them via Faster-Whisper, uses a local
-Ollama LLM to identify the most viral/engaging segments, and renders those
+local vLLM LLM (OpenAI-compatible, http://127.0.0.1:8002, model `meissa-7b-awq`)
+to identify the most viral/engaging segments, and renders those
 segments into vertical (9:16) TikTok/Reels style clips with dynamic captions
 using FFmpeg.
 
@@ -12,7 +13,7 @@ using FFmpeg.
   SQLAlchemy (SQLite), Pydantic.
 - **Frontend:** React, TypeScript, Vite, Tailwind CSS, React Router,
   TanStack Query.
-- **AI/ML:** Faster-Whisper (transcription), Ollama (local LLM).
+- **AI/ML:** Faster-Whisper (transcription), vLLM 0.27.1 (OpenAI-compatible LLM on 127.0.0.1:8002, model `meissa-7b-awq`). Ollama is no longer used by the pipeline; its config keys are vestigial.
 - **Video/Audio:** FFmpeg (via `subprocess`).
 
 ## Project Map — read this before exploring
@@ -24,13 +25,14 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `backend/app/main.py`                    — FastAPI app entry; mounts `/api`, `/renders`, `/sources`
 - `backend/app/api/routes.py`              — HTTP routes (videos, clips, templates, accounts, `/api/music`)
 - `backend/app/core/config.py`             — settings + ffmpeg binary resolution
+- `backend/app/core/gpu_lock.py`           — process-wide single-tenant GPU lock (sync + async)
 - `backend/app/core/paths.py`              — single source of truth for filesystem paths
 - `backend/app/core/processing_utils.py`   — robust media processing utilities (`run_subprocess`)
 - `backend/app/database.py`                — DB session, schema bootstrap
 - `backend/app/models.py`                  — SQLAlchemy models (Video, Clip, Template)
 - `backend/app/schemas.py`                 — Pydantic models
 - `backend/app/services/whisper_service.py`    — faster-whisper transcription
-- `backend/app/services/llm_service.py`        — Ollama client (Meissa / Gemma / Qwen)
+- `backend/app/services/llm_service.py`        — vLLM (OpenAI-compatible) client at http://127.0.0.1:8002/v1, model `meissa-7b-awq`
 - `backend/app/services/edit_compiler.py`      — `compile_plan()`; FFmpeg filtergraph builder
 - `backend/app/services/render_service.py`     — render orchestration; BGM settings, two-pass loudnorm hook
 - `backend/app/services/face_tracker.py`       — YOLOv8 face detection
@@ -61,6 +63,14 @@ or `ls -R` at the start of a task.** Open only the files you need.
   GET `/{name}/preview`). Audio files are git-ignored; optional `<file>.json` sidecars
   carry title/artist/license. Templates select BGM via `bgm_track` + `bgm_volume`
   (and `bgm_duck`), resolved in `render_service.py`.
+- `services/vllm/`            — self-contained vLLM 0.27.1 on Windows (bundled Python 3.13,
+  no WSL/Docker). `start_vllm.bat` owns the exact command:
+  `launch.bat --model <meissa-7b-awq path> --port 8002 --max-model-len 4096
+  --gpu-memory-utilization 0.60 --max-num-seqs 4 --enforce-eager`. It exposes an
+  OpenAI-compatible `/v1` API and `GET /health`. Called by root `start.bat`; the
+  model path/flags live in that script (gitignored). Model: `<model-directory>\meissa-7b-awq`.
+  The real model directory is configured in the gitignored local launcher, not
+  in this tracked document.
 
 ### Tests & tooling
 - `backend/tests/`          — pytest suite (audio graph, loudness, music, render, BGM templates)
@@ -69,7 +79,13 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - `.coderabbit.yaml`        — CodeRabbit review config + path-specific instructions
 
 ### Host-side scripts (run outside the app)
-- `start.bat`, `start.ps1`  — one-click launchers (venv + backend + frontend; host-absolute paths)
+- `start.bat`               — one-click launcher: health-checks then starts vLLM (8002),
+  backend (8080) and frontend (5173) in minimized windows, in that order. Tunables
+  (ports, health URLs, timeouts, LLM script) are at the top of the file; output goes
+  to `logs\*.log` and PIDs to `.run\*.pid` (both gitignored). `stop.bat` stops only
+  those PIDs. Bootstraps the backend venv when missing.
+- `stop.bat`                — stops the processes recorded in `.run\*.pid` and frees the ports.
+- `start.ps1`               — legacy PowerShell launcher (backend + frontend only).
 - `Start-OpenHands.bat`     — host launcher for the OpenHands Docker/WSL environment (not the app)
 - `script.py`, `backend/quantize_meissa.py`, `backend/update_music.py` (stub),
   `backend/fix_paths.py` (one-off DB path migration), `backend/init_db_script.py`,
@@ -97,11 +113,18 @@ or `ls -R` at the start of a task.** Open only the files you need.
 
 # Setup & Run Commands
 
+- **One-click:** run `start.bat` from the repo root. It starts, in order:
+  vLLM (`services\vllm\start_vllm.bat`, `http://127.0.0.1:8002/v1`, model
+  `meissa-7b-awq`; health `GET /health`), the backend (8080, health
+  `/api/status`), and the frontend (5173), then opens the browser. Each service
+  is skipped if its health endpoint already answers. Polls every 3s; the LLM
+  timeout defaults to 300s (model load is slow) and is tunable at the top of the
+  script. On LLM timeout it prints the service name and log path and exits
+  before starting the backend. Run `stop.bat` to stop only what it started.
 - **Backend:** from `backend/`, activate the venv and run
   `python -m uvicorn app.main:app --reload --port 8080` → `http://localhost:8080`
-  (`start.bat` creates the venv with Python 3.12/3.11, installs
-  `requirements.txt`, and starts both apps). `start.ps1` and the Vite proxy
-  also use port 8080.
+  (`start.bat` bootstraps the venv with Python 3.12/3.11 when missing).
+  `start.ps1` and the Vite proxy also use port 8080.
 - **Frontend:** `cd frontend && npm run dev` (Vite on `http://localhost:5173`).
   `npm run build` = `tsc && vite build`.
 - **Tests:** from `backend/`, `python -m pytest tests -q` and `ruff check .`.
@@ -127,8 +150,8 @@ or `ls -R` at the start of a task.** Open only the files you need.
 - **ROUTING:** Endpoints must match the frontend's fetch calls exactly (watch for 404s).
 - **IMPORTS:** Import new models/sessions at the top of the file.
 
-## 4. Ollama & JSON Parsing
-- **FORMAT:** ALWAYS pass `"format": "json"` to the Ollama API payload.
+## 4. vLLM & JSON Parsing
+- **FORMAT:** ALWAYS request structured JSON via `response_format={"type": "json_schema", ...}` on the OpenAI-compatible `/v1/chat/completions` call; never send Ollama-only fields (`format`, `keep_alive`).
 - **PARSING:** Strip markdown backticks before `json.loads()`.
 - **FAIL LOUDLY:** On LLM failure print the RAW output and traceback; never silently
   substitute dummy data.
@@ -154,6 +177,14 @@ or `ls -R` at the start of a task.** Open only the files you need.
 ## 7. Public repo
 Never commit `.env`, API keys, personal absolute paths, or copyrighted audio.
 BGM files are git-ignored; document license/source in a sidecar JSON.
+
+## 8. GPU rules
+- Every VRAM-touching stage holds `gpu_lock(stage)` from `core/gpu_lock.py` for
+  the minimum span of GPU work, then calls `flush_vram(stage)` at the end.
+  The lock is process-wide and re-entrant; `GPULockTimeout` fails loudly.
+- vLLM has no per-request unload: VRAM is released by the server lifetime, not per-request. Do not send Ollama's `keep_alive`.
+- Never run blocking render work on the event loop: offload with
+  `asyncio.to_thread` and instantiate a new `SessionLocal()` inside the worker.
 
 # Testing & Verification
 

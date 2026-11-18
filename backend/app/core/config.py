@@ -60,6 +60,15 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen14b-awq")
 
 OLLAMA_ACTIVE_MODEL: str | None = None
 
+# Phase 4.0 - ComfyUI VRAM release. A single POST to /free asks a running
+# ComfyUI instance to unload its models; it is a no-op when nothing listens.
+COMFYUI_URL = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188").strip().rstrip("/")
+COMFYUI_FREE_TIMEOUT = float(os.getenv("COMFYUI_FREE_TIMEOUT", "1"))
+
+# Phase 4.0 - single-tenant GPU guardrails. A VRAM stage waits at most this
+# long for the process-wide GPU lock before failing loudly with GPULockTimeout.
+GPU_LOCK_TIMEOUT = float(os.getenv("GPU_LOCK_TIMEOUT", "900"))
+
 # Whisper
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")  # cuda | cpu
@@ -94,6 +103,10 @@ MUSIC_MAX_UPLOAD_BYTES = MUSIC_MAX_UPLOAD_MB * 1024 * 1024
 LOUDNESS_NORMALIZE = os.getenv("LOUDNESS_NORMALIZE", "false").strip().lower() in ("1", "true", "yes", "on")
 LOUDNESS_TARGET_I = float(os.getenv("LOUDNESS_TARGET_I", "-14"))
 LOUDNESS_TARGET_TP = float(os.getenv("LOUDNESS_TARGET_TP", "-1.5"))
+# The two-pass post-render normalization re-encodes audio as AAC, which can
+# overshoot true peak by ~0.5 dB. Leave headroom there only; the inline
+# loudnorm (single encode) keeps the -1.5 dBTP target above.
+LOUDNESS_TP_HEADROOM = float(os.getenv("LOUDNESS_TP_HEADROOM", "0.5"))
 LOUDNESS_TARGET_LRA = float(os.getenv("LOUDNESS_TARGET_LRA", "11"))
 
 # Batch (drop-folder) processing

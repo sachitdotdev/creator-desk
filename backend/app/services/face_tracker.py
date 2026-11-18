@@ -1,6 +1,8 @@
 import os
 
 from app.core.config import FACE_MODEL
+from app.core.gpu_lock import gpu_lock
+from app.core.processing_utils import flush_vram
 
 
 def generate_sendcmd_file(video_path: str, start_time: float, duration: float, sendcmd_path: str, target_width: int = 1080) -> bool:
@@ -14,51 +16,58 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
             return False
 
         from ultralytics import YOLO
-        model = YOLO(FACE_MODEL)
+        # Model load + YOLO inference are the only VRAM-touching steps here.
+        # Hold the lock for that span, then flush once when it is done.
+        with gpu_lock("face-tracker:yolo"):
+            try:
+                model = YOLO(FACE_MODEL)
 
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened(): return False
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened(): return False
 
-        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0: fps = 30
-        original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        scale_factor = 1920 / original_height
+                cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                if fps == 0: fps = 30
+                original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                scale_factor = 1920 / original_height
 
-        smoothed_x = None
-        alpha = 0.15
-        frame_count = 0
-        sampled_positions = []
-        frame_skip = 5
+                smoothed_x = None
+                alpha = 0.15
+                frame_count = 0
+                sampled_positions = []
+                frame_skip = 5
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret or frame_count > (duration * fps): break
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret or frame_count > (duration * fps): break
 
-            if frame_count % frame_skip == 0:
-                results = model(frame, verbose=False, device="cuda")
-                current_x = None
-                max_area = 0
+                    if frame_count % frame_skip == 0:
+                        results = model(frame, verbose=False, device="cuda")
+                        current_x = None
+                        max_area = 0
 
-                for r in results:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        area = (x2 - x1) * (y2 - y1)
-                        if area > max_area:
-                            max_area = area
-                            current_x = x1 + (x2 - x1) / 2
+                        for r in results:
+                            for box in r.boxes:
+                                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                                area = (x2 - x1) * (y2 - y1)
+                                if area > max_area:
+                                    max_area = area
+                                    current_x = x1 + (x2 - x1) / 2
 
-                if current_x is not None:
-                    if smoothed_x is None: smoothed_x = current_x
-                    else: smoothed_x = (alpha * current_x) + ((1 - alpha) * smoothed_x)
+                        if current_x is not None:
+                            if smoothed_x is None: smoothed_x = current_x
+                            else: smoothed_x = (alpha * current_x) + ((1 - alpha) * smoothed_x)
 
-                if smoothed_x is not None:
-                    sampled_positions.append((frame_count, smoothed_x))
+                        if smoothed_x is not None:
+                            sampled_positions.append((frame_count, smoothed_x))
 
-            frame_count += 1
+                    frame_count += 1
 
-        cap.release()
+                cap.release()
+            finally:
+                # Release VRAM even when detection raises or exits early.
+                flush_vram("face-tracker:yolo")
 
         final_commands = []
         if sampled_positions:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import gc
 import logging
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 
 def _register_nvidia_dll_paths() -> None:
@@ -40,10 +41,20 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app.core.config import (
-    WHISPER_MODEL,
+from app.core.config import FFMPEG_TIMEOUT_SECONDS, WHISPER_MODEL
+from app.core.gpu_lock import gpu_lock
+from app.core.paths import TEMP_DIR
+from app.core.processing_utils import flush_vram
+
+# Audio chunking is pure CPU/IO and runs BEFORE the GPU lock is acquired, so a
+# hung FFmpeg must be killed with a bounded timeout instead of stalling every
+# queued transcription. The cap keeps a pathological input from holding the
+# chunk scratch directory indefinitely.
+CHUNK_SEGMENT_SECONDS = 600
+CHUNK_FFMPEG_TIMEOUT_SECONDS = min(
+    int(os.getenv("WHISPER_CHUNK_FFMPEG_TIMEOUT", "600")),
+    FFMPEG_TIMEOUT_SECONDS,
 )
-from app.core.processing_utils import clear_gpu_memory
 
 # --------------------------------------------------------------------------- PyAV compatibility
 # faster-whisper decodes audio via ``av.open(input, mode="r", metadata_errors="ignore")``.
@@ -177,6 +188,7 @@ def group_kinetic_phrases(
 class WhisperService:
     def __init__(self):
         self._model = None
+        self._batched_model = None
         self._model_size = None
 
     def _load_model(self):
@@ -187,17 +199,23 @@ class WhisperService:
         except ImportError as exc:
             raise RuntimeError(f"Failed to import faster_whisper: {exc}") from exc
 
-        try:
-            self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cuda", compute_type="int8")
-        except Exception:  # noqa: BLE001 - CUDA -> CPU fallback is best-effort
-            print("DEBUG: CUDA failed, falling back to CPU", flush=True)
-            self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cpu", compute_type="int8")
+        # Model construction touches VRAM: only one tenant may do this at once.
+        with gpu_lock("whisper:model-load"):
+            try:
+                try:
+                    self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cuda", compute_type="int8")
+                except Exception:  # noqa: BLE001 - CUDA -> CPU fallback is best-effort
+                    print("DEBUG: CUDA failed, falling back to CPU", flush=True)
+                    self._model = WhisperModel("Systran/faster-distil-whisper-large-v3", device="cpu", compute_type="int8")
 
-        print("DEBUG: Whisper model loaded successfully.", flush=True)
+                print("DEBUG: Whisper model loaded successfully.", flush=True)
 
-        # Create a batched inference pipeline that fits comfortably in 12GB VRAM
-        self._batched_model = BatchedInferencePipeline(model=self._model)
-        self._model_size = WHISPER_MODEL
+                # Create a batched inference pipeline that fits comfortably in 12GB VRAM
+                self._batched_model = BatchedInferencePipeline(model=self._model)
+                self._model_size = WHISPER_MODEL
+            finally:
+                # A failed CPU fallback must still flush and then propagate.
+                flush_vram("whisper:model-load")
         return self._model
 
 
@@ -207,9 +225,15 @@ class WhisperService:
         Called between batch jobs to prevent CUDA memory from accumulating
         during long-running sessions. Safe to call when no model is loaded.
         """
-        self._model = None
-        self._model_size = None
-        clear_gpu_memory()
+        with gpu_lock("whisper:unload"):
+            try:
+                # Every stored GPU-object reference must be dropped here, not
+                # just the base model: the batched pipeline also owns VRAM.
+                self._model = None
+                self._batched_model = None
+                self._model_size = None
+            finally:
+                flush_vram("whisper:unload")
 
     def extract_audio(self, video_path: str, audio_path: str) -> str:
         """Extract audio from a video file using FFmpeg.
@@ -241,89 +265,157 @@ class WhisperService:
         """Alias for unload_model() for readability at call sites."""
         self.unload_model()
 
-    def transcribe(self, audio_path: str) -> list[dict]:
-        print(f"DEBUG: [transcribe] Chunking audio file: {audio_path}")
+    def _create_audio_chunks(self, audio_path: str, temp_dir: str) -> list[Path]:
+        """Split audio into fixed-length WAV chunks using FFmpeg.
 
-        import tempfile
-
-        import torch
-        import whisperx
-        from faster_whisper import BatchedInferencePipeline
-
-        # Create a temporary directory for chunks
-        temp_dir = tempfile.mkdtemp()
+        This is deliberately a separate, CPU-only step: it runs BEFORE the GPU
+        lock is acquired. A stalled FFmpeg is killed after a bounded timeout so
+        it cannot block queued transcriptions or leak the scratch directory.
+        """
         chunk_pattern = os.path.join(temp_dir, "chunk_%03d.wav")
-
-        # Split into 10-minute chunks using ffmpeg
-        subprocess.run([
+        cmd = [
             "ffmpeg", "-y", "-i", audio_path,
-            "-f", "segment", "-segment_time", "600",
+            "-f", "segment", "-segment_time", str(CHUNK_SEGMENT_SECONDS),
             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            chunk_pattern
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-
-        chunks = sorted(Path(temp_dir).glob("chunk_*.wav"))
-        print(f"DEBUG: [transcribe] Split into {len(chunks)} chunks.")
-
-        all_segments = []
-        current_offset = 0.0
-
-        model = self._load_model()
-        batched_model = BatchedInferencePipeline(model=model)
-
-        for i, chunk_path in enumerate(chunks):
-            print(f"DEBUG: [transcribe] Processing chunk {i+1}/{len(chunks)}...")
-
-            segments, info = batched_model.transcribe(
-                str(chunk_path),
-                batch_size=4,
-                vad_filter=True,
-                vad_parameters={"threshold": 0.3},
-                language="en"
+            chunk_pattern,
+        ]
+        proc: subprocess.Popen | None = None
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
+            proc.communicate(timeout=CHUNK_FFMPEG_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                proc.kill()
+                # Reap the killed child so it cannot become a zombie. This is
+                # best-effort: a still-stubborn child must not mask the timeout.
+                try:
+                    proc.communicate()
+                except subprocess.TimeoutExpired:
+                    pass
+            raise RuntimeError(
+                f"FFmpeg audio chunking timed out after "
+                f"{CHUNK_FFMPEG_TIMEOUT_SECONDS}s on {audio_path}"
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"FFmpeg not found in PATH — cannot chunk audio from {audio_path}"
+            ) from exc
+        return sorted(Path(temp_dir).glob("chunk_*.wav"))
 
-            chunk_segments = list(segments)
+    def transcribe(self, audio_path: str) -> list[dict]:
+        # FFmpeg chunking is CPU/IO only: do it BEFORE taking the GPU lock so a
+        # slow or hung decode cannot stall other VRAM stages. Scratch files go
+        # under the central TEMP_DIR and are removed on every path.
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
+        chunks: list[Path] = []
 
-            # Offset timestamps to match original audio
-            for s in chunk_segments:
-                all_segments.append({
-                    "start": float(s.start + current_offset),
-                    "end": float(s.end + current_offset),
-                    "text": s.text.strip()
-                })
+        try:
+            print(f"DEBUG: [transcribe] Chunking audio file: {audio_path}")
+            chunks = self._create_audio_chunks(audio_path, temp_dir)
+            print(f"DEBUG: [transcribe] Split into {len(chunks)} chunks.")
 
-            current_offset += info.duration
+            # Hold the GPU lock for the WHOLE GPU part of the transcription:
+            # model load, inference, alignment and release. Two concurrent
+            # calls must never each keep a CUDA model resident at the same time.
+            # The lock is re-entrant, so the finer-grained stages below still
+            # take their own (nested) locks as before.
+            with gpu_lock("whisper:transcribe"):
+                # Declared up front so the finally can drop every reference,
+                # even when an exception happens before an assignment.
+                model = None
+                batched_model = None
+                model_a = None
+                metadata = None
+                aligned_result = None
+                chunk_segments = None
+                info = None
+                try:
+                    import whisperx
+                    from faster_whisper import BatchedInferencePipeline
 
-            # Force memory cleanup per chunk
-            del chunk_segments
-            gc.collect()
-            torch.cuda.empty_cache()
+                    all_segments = []
+                    current_offset = 0.0
 
-        # --- WHISPERX FORCED ALIGNMENT ---
-        print("DEBUG: Running WhisperX forced alignment...")
-        device = "cuda"
-        # Load the alignment model for English
-        model_a, metadata = whisperx.load_align_model(language_code="en", device=device)
-        # Align the segments
-        aligned_result = whisperx.align(
-            all_segments,
-            model_a,
-            metadata,
-            audio_path,
-            device,
-            return_char_alignments=False
-        )
-        # The result now has word-level timestamps
-        all_segments = aligned_result["segments"]
-        print("DEBUG: WhisperX alignment complete.")
+                    model = self._load_model()
+                    batched_model = BatchedInferencePipeline(model=model)
 
-        # Cleanup temp files
-        for f in chunks:
-            os.remove(f)
-        os.rmdir(temp_dir)
+                    for i, chunk_path in enumerate(chunks):
+                        print(f"DEBUG: [transcribe] Processing chunk {i+1}/{len(chunks)}...")
 
-        print(f"DEBUG: [transcribe] Finished. Total segments: {len(all_segments)}")
-        return all_segments
+                        with gpu_lock("whisper:transcribe"):
+                            try:
+                                segments, info = batched_model.transcribe(
+                                    str(chunk_path),
+                                    batch_size=4,
+                                    vad_filter=True,
+                                    vad_parameters={"threshold": 0.3},
+                                    language="en"
+                                )
+                                # Inference is lazy: the generator must be consumed while the
+                                # GPU lock is still held.
+                                chunk_segments = list(segments)
+                            finally:
+                                flush_vram("whisper:transcribe")
+
+                        # Offset timestamps to match original audio
+                        for s in chunk_segments:
+                            all_segments.append({
+                                "start": float(s.start + current_offset),
+                                "end": float(s.end + current_offset),
+                                "text": s.text.strip()
+                            })
+                        chunk_segments = None
+
+                        current_offset += info.duration
+
+                    # --- WHISPERX FORCED ALIGNMENT ---
+                    print("DEBUG: Running WhisperX forced alignment...")
+                    with gpu_lock("whisper:alignment"):
+                        try:
+                            device = "cuda"
+                            # Load the alignment model for English
+                            model_a, metadata = whisperx.load_align_model(language_code="en", device=device)
+                            # Align the segments
+                            aligned_result = whisperx.align(
+                                all_segments,
+                                model_a,
+                                metadata,
+                                audio_path,
+                                device,
+                                return_char_alignments=False
+                            )
+                            # The result now has word-level timestamps
+                            all_segments = aligned_result["segments"]
+                        finally:
+                            flush_vram("whisper:alignment")
+                    print("DEBUG: WhisperX alignment complete.")
+
+                    print(f"DEBUG: [transcribe] Finished. Total segments: {len(all_segments)}")
+                    return all_segments
+                finally:
+                    # Drop every local GPU-object reference BEFORE the final
+                    # flush and before the surrounding lock is released. The
+                    # stored service refs are cleared by unload_model() below.
+                    # Exceptions still propagate; the CUDA -> CPU fallback in
+                    # _load_model is unaffected (it happens in the guarded body).
+                    model = None
+                    batched_model = None
+                    model_a = None
+                    metadata = None
+                    aligned_result = None
+                    chunk_segments = None
+                    info = None
+                    try:
+                        self.unload_model()
+                    finally:
+                        flush_vram("whisper:transcribe")
+        finally:
+            # Also runs when gpu_lock acquisition itself times out: no chunk
+            # scratch file may be left behind on any success/failure path.
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def format_srt(self, result: TranscriptionResult) -> str:
         def fmt(ts: float) -> str:

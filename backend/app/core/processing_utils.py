@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
+
+from app.core.config import COMFYUI_FREE_TIMEOUT, COMFYUI_URL
+
+log = logging.getLogger(__name__)
 
 # Default timeout (seconds) for a single ffmpeg/ffprobe invocation. A long
 # batch should never let one hung encode block the whole server.
@@ -150,3 +155,61 @@ def clear_gpu_memory() -> None:
     except Exception:  # noqa: BLE001 - degrade gracefully when torch is unavailable
         # torch not installed, or no CUDA — nothing to do.
         print("DEBUG: clear_gpu_memory: skipping (torch unavailable or no CUDA)", flush=True)
+
+
+def free_comfyui() -> None:
+    """Ask a running ComfyUI to unload its models via ``POST /free``.
+
+    Best-effort by design: an unset URL, an unreachable server, a missing
+    ``httpx`` install or any other failure is swallowed with a debug log. No
+    ComfyUI client is built here - this is the single hygiene call.
+    """
+    if not COMFYUI_URL:
+        log.debug("[COMFYUI] /free skipped: no URL configured")
+        return
+    try:
+        import httpx
+
+        response = httpx.post(
+            f"{COMFYUI_URL.rstrip('/')}/free",
+            timeout=COMFYUI_FREE_TIMEOUT,
+            json={"unload_models": True, "free_memory": True},
+        )
+        # A non-2xx response is reported by the handler below. /free is strictly
+        # best-effort and must never fail the caller.
+        response.raise_for_status()
+        log.debug("[COMFYUI] /free -> %s at %s", response.status_code, COMFYUI_URL)
+    except Exception as exc:  # noqa: BLE001 - ComfyUI is optional and best-effort
+        log.debug("[COMFYUI] /free skipped (%s): %s", COMFYUI_URL, exc)
+
+
+def flush_vram(stage: str) -> None:
+    """Release VRAM at the end of a GPU stage; never raises.
+
+    Runs ``gc.collect()`` unconditionally, then ``torch.cuda.empty_cache()``
+    and ``torch.cuda.ipc_collect()`` only when torch is importable *and* CUDA
+    is available, and finally asks ComfyUI to free its models. Every step is
+    logged and guarded so CI machines without torch stay green.
+    """
+    gc.collect()
+    log.debug("[VRAM] %s: gc.collect() done", stage)
+
+    try:
+        import torch  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - torch is an optional dependency
+        log.debug("[VRAM] %s: CUDA cleanup skipped (torch unavailable: %s)", stage, exc)
+    else:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                log.info("[VRAM] %s: torch.cuda.empty_cache() + ipc_collect() done", stage)
+            else:
+                log.debug("[VRAM] %s: CUDA unavailable; no torch cache to free", stage)
+        except Exception as exc:  # noqa: BLE001 - CUDA may be broken/unavailable
+            log.debug("[VRAM] %s: CUDA cleanup skipped (%s)", stage, exc)
+
+    try:
+        free_comfyui()
+    except Exception as exc:  # noqa: BLE001 - ComfyUI is strictly best-effort
+        log.debug("[VRAM] %s: free_comfyui() skipped (%s)", stage, exc)

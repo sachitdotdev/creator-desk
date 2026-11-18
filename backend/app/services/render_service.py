@@ -4,7 +4,6 @@ from ..core.paths import RENDERS_DIR
 
 """Render service: FFmpeg libx264 9:16 vertical clips with burned ASS captions + template overlay."""
 
-import gc
 import json
 import logging
 import math
@@ -28,10 +27,12 @@ from app.core.config import (
     LOUDNESS_TARGET_I,
     LOUDNESS_TARGET_LRA,
     LOUDNESS_TARGET_TP,
+    LOUDNESS_TP_HEADROOM,
 )
+from app.core.gpu_lock import gpu_lock
 from app.core.processing_utils import (
-    clear_gpu_memory,
     ensure_writable_dir,
+    flush_vram,
     run_subprocess,
 )
 from app.models import Clip, Template, Video
@@ -55,6 +56,27 @@ def _coerce_music_volume(value: Any, default: float = AUDIO_MUSIC_VOLUME) -> flo
     if not math.isfinite(volume):
         return default
     return min(max(volume, 0.0), 1.0)
+
+
+def _effective_loudness_target_tp() -> float:
+    """Return the true-peak target after headroom, clamped to FFmpeg's range.
+
+    ``loudnorm`` only accepts TP in [-9.0, 0.0]. A misconfigured
+    ``LOUDNESS_TARGET_TP`` / ``LOUDNESS_TP_HEADROOM`` pair must not produce an
+    invalid filter value and fail the final normalization pass.
+    """
+    effective = LOUDNESS_TARGET_TP - LOUDNESS_TP_HEADROOM
+    clamped = min(max(effective, -9.0), 0.0)
+    if clamped != effective:
+        log.warning(
+            "Effective loudnorm true-peak target %.2f is outside [-9.0, 0.0]; "
+            "clamping to %.2f (LOUDNESS_TARGET_TP=%s, LOUDNESS_TP_HEADROOM=%s)",
+            effective,
+            clamped,
+            LOUDNESS_TARGET_TP,
+            LOUDNESS_TP_HEADROOM,
+        )
+    return clamped
 
 
 def resolve_bgm_settings(template_config: dict | None) -> tuple[str | None, float, bool]:
@@ -166,15 +188,10 @@ class RenderService:
         directory is verified writable before any work begins.
         """
 
-        # Clear VRAM from previous stages (Whisper/vLLM) before rendering
-        gc.collect()
-        try:
-            import torch  # heavy, optional dependency: keep the module importable without it
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001 - degrade gracefully when torch is unavailable
-            print("DEBUG render_clip: skipping torch VRAM cleanup (torch unavailable)", flush=True)
+        # Clear VRAM from previous stages (Whisper/vLLM) before rendering.
+        # Only this cleanup touches the GPU: the FFmpeg encode below is CPU.
+        with gpu_lock("render:vram-clear"):
+            flush_vram("render:vram-clear")
 
         # Clamp start_time to >= 0 and ensure end_time > start_time
         if clip.start_time < 0:
@@ -259,7 +276,7 @@ class RenderService:
                     str(output_path),
                     str(normalized_path),
                     target_i=LOUDNESS_TARGET_I,
-                    target_tp=LOUDNESS_TARGET_TP,
+                    target_tp=_effective_loudness_target_tp(),
                     target_lra=LOUDNESS_TARGET_LRA,
                 )
                 if loudness_stats is not None:
@@ -312,7 +329,8 @@ class RenderService:
 
         # Release GPU/accelerator memory after each render so long batch
         # sessions do not leak NVENC/CUDA buffers.
-        clear_gpu_memory()
+        with gpu_lock("render:flush"):
+            flush_vram("render:flush")
         return str(output_path)
 
     def _default_config(self) -> dict[str, Any]:

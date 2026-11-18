@@ -60,3 +60,14 @@ backend/assets/music/*.[mM][pP]3
 backend/assets/music/*.[wW][aA][vV]
 backend/assets/music/*.[mM]4[aA]
 backend/assets/music/*.[oO][gG][gG]
+
+# Generated test SFX (case-insensitive); sidecar .json stays tracked.
+backend/assets/sfx/*.[wW][aA][vV]
+backend/assets/sfx/*.[mM][pP]3
+backend/assets/sfx/*.[mM]4[aA]
+backend/assets/sfx/*.[oO][gG][gG]
+backend/assets/sfx/*.[fF][lL][aA][cC]
+
+# One-click launcher runtime: per-service logs and tracked PIDs.
+logs/
+.run/

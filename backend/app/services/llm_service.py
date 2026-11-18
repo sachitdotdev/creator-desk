@@ -117,7 +117,8 @@ class LLMService:
                 ],
                 temperature=0.7,
                 max_tokens=2048,
-                response_format={"type": "json_schema", "json_schema": {"name": "clips_response", "schema": schema}}
+                # vLLM ignores Ollama's keep_alive; VRAM is released by server lifetime, not per request.
+                response_format={"type": "json_schema", "json_schema": {"name": "clips_response", "schema": schema}},
             )
             
             raw = resp.choices[0].message.content

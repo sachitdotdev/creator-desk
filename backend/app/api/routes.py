@@ -68,6 +68,33 @@ async def process_video(video_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_pipeline, video_id)
     return {"message": "Processing started", "video_id": video_id}
 
+def _render_clip_in_thread(clip_id: int, video_id: int, template_id: int | None) -> str:
+    """Render one clip in a worker thread using a brand-new DB session.
+
+    SQLAlchemy sessions are not thread-safe: the request/pipeline session must
+    never cross a thread boundary (AGENTS.md rule 3). The worker reloads the
+    rows by id and closes its own session in a ``finally``.
+    """
+    render_db = SessionLocal()
+    try:
+        clip = render_db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+        if clip is None:
+            raise HTTPException(status_code=404, detail="Clip not found")
+        video = render_db.query(models.Video).filter(models.Video.id == video_id).first()
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video not found")
+        template = None
+        if template_id is not None:
+            template = (
+                render_db.query(models.Template)
+                .filter(models.Template.id == template_id)
+                .first()
+            )
+        return RenderService(render_db).render_clip(clip, video, template)
+    finally:
+        render_db.close()
+
+
 async def _run_pipeline(video_id: str):
     print("DEBUG: Pipeline started", flush=True)
     db = SessionLocal()
@@ -97,7 +124,9 @@ async def _run_pipeline(video_id: str):
 
         print("DEBUG: Starting transcription", flush=True)
         # Call WhisperService to transcribe the video
-        whisper_result = WhisperService().transcribe(video_path)
+        # Whisper holds the GPU lock and does multi-minute blocking work; keep
+        # it off the event loop so health checks and status polling stay live.
+        whisper_result = await asyncio.to_thread(WhisperService().transcribe, video_path)
         video.status = "transcribed"
         transcript_dir = Path(str(TRANSCRIPTS_DIR))
         transcript_dir.mkdir(parents=True, exist_ok=True)
@@ -144,10 +173,18 @@ async def _run_pipeline(video_id: str):
             db.commit()
             db.refresh(clip)
 
-            # Render each clip
+            # Render each clip off the event loop. FFmpeg can run for minutes;
+            # the worker gets its own session, and we refresh ours afterwards
+            # so QC/status below see the committed output path and status.
             print(f"DEBUG: Rendering clip {idx+1}/{len(clips)}", flush=True)
             try:
-                RenderService(db).render_clip(clip, video, template)
+                await asyncio.to_thread(
+                    _render_clip_in_thread,
+                    clip.id,
+                    video.id,
+                    template.id if template else None,
+                )
+                db.refresh(clip)
             except Exception as e:  # noqa: BLE001 - render failures are tracked on the clip
                 print(f"DEBUG: Failed to render clip {clip.id}: {e}", flush=True)
                 clip.status = "error"
@@ -160,7 +197,15 @@ async def _run_pipeline(video_id: str):
             if output_path:
                 min_dur = 60.0
                 try:
-                    passed, reason = audit_clip(output_path, min_dur, expected_crop_x=clip.layout == "split_screen")
+                    # QC shells out to ffprobe and can block for seconds; keep
+                    # it off the event loop so health checks and status polling
+                    # stay responsive (same rule as the render step above).
+                    passed, reason = await asyncio.to_thread(
+                        audit_clip,
+                        output_path,
+                        min_dur,
+                        expected_crop_x=clip.layout == "split_screen",
+                    )
                     if not passed:
                         print(f"DEBUG: QC failed for clip {clip.id}: {reason}", flush=True)
                         clip.status = "failed"

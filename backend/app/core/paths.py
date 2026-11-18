@@ -23,6 +23,10 @@ RENDERS_DIR   = DATA_DIR / "renders"
 MODELS_DIR    = ASSETS_DIR / "models"
 FACE_MODEL    = BACKEND_DIR / "yolov8n-face.pt"
 
+# Central scratch root for CPU-only work (e.g. Whisper's FFmpeg audio chunks).
+# Created on demand by the caller; overridable without changing the data root.
+TEMP_DIR      = Path(os.environ.get("CREATOR_DESK_TEMP_DIR", str(DATA_DIR / "tmp")))
+
 TRANSCRIPTS_DIR = DATA_DIR / "creators"
 TEMPLATES_DIR   = DATA_DIR / "templates"
 DB_PATH          = DATA_DIR / "creatordesk.db"
