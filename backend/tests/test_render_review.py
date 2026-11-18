@@ -49,6 +49,63 @@ def test_missed_frames_uses_only_sampled_records(monkeypatch, tmp_path):
     assert seen["times"] == [0.0]
 
 
+def test_missed_frames_reports_fallback_without_reading_old_detections(monkeypatch, tmp_path):
+    called: list = []
+    monkeypatch.setattr(
+        render_review, "build_contact_sheet", lambda *a, **k: called.append(a)
+    )
+    result = render_review.build_missed_frames_sheet(
+        None, None, {"fallback": True, "reason": "capture not opened"},
+        Path("render.mp4"), tmp_path / "missed.png",
+    )
+    assert result["count"] == 0
+    assert result["tracker_fallback"] is True
+    assert render_review.TRACKER_FALLBACK_MESSAGE in result["reason"]
+    assert called == []
+
+
+def test_main_reports_tracker_fallback(monkeypatch, tmp_path, capsys):
+    render = tmp_path / "render.mp4"
+    render.write_bytes(b"")
+    crop = tmp_path / "crop_9.txt"
+    crop.write_text("0.000 overlay x -1000.00;\n", encoding="utf-8")
+    crop.with_suffix(".track.json").write_text(
+        json.dumps({"fallback": True, "reason": "capture not opened"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "render_review.py", str(render), "--crop", str(crop),
+        "--out-dir", str(tmp_path / "reviews"),
+    ])
+    monkeypatch.setattr(render_review, "db_lookup", lambda *a: {
+        "clip_id": None, "source_path": None, "start_time": None,
+        "sfx_count": None, "crop_path": None,
+    })
+    monkeypatch.setattr(render_review, "probe_media", lambda *a: {
+        "duration": 1.0, "resolution": [1080, 1920], "fps": "30/1",
+    })
+    monkeypatch.setattr(render_review, "find_ass", lambda *a: None)
+    monkeypatch.setattr(render_review, "build_contact_sheet", lambda *a, **k: None)
+    monkeypatch.setattr(render_review, "black_frame_report", lambda *a: {
+        "status": "ok", "periods": [], "black_first_frame": False,
+        "first_5_luma": [80.0], "black_frame_count": 0, "black_frame_indices": [],
+    })
+    monkeypatch.setattr(render_review, "caption_safe_zone", lambda *a, **k: {
+        "bottom_margin_pct": None, "margin_source": None,
+        "safe_zone_violation": None,
+    })
+    monkeypatch.setattr(render_review, "build_missed_frames_sheet", lambda *a, **k: {
+        "count": 0, "sheet": None, "timestamps": [],
+    })
+
+    render_review.main()
+    metrics = json.loads((tmp_path / "reviews" / "render" / "metrics.json").read_text())
+    assert metrics["tracker_fallback"] is True
+    assert metrics["face_tracking"]["available"] is False
+    assert render_review.TRACKER_FALLBACK_MESSAGE in metrics["face_tracking"]["reason"]
+    out = capsys.readouterr().out
+    assert render_review.TRACKER_FALLBACK_MESSAGE in out
+
+
 def test_black_first_frame_comes_from_frame_zero_luma(monkeypatch):
     periods = [{"black_start": 0.2, "black_end": 0.3, "black_duration": 0.1}]
     monkeypatch.setattr(render_review, "blackdetect_periods", lambda *a, **k: periods)

@@ -32,12 +32,14 @@ from pathlib import Path
 from render_metrics import (
     SAFE_ZONE_BOTTOM_PCT,
     TARGET_WIDTH,
+    TRACKER_FALLBACK_MESSAGE,
     UNAVAILABLE,
     blackdetect_periods,
     caption_metrics,
     compute_crop_metrics,
     first_frame_luma,
     parse_sendcmd,
+    tracker_fallback_reason,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -351,6 +353,12 @@ def build_missed_frames_sheet(
     Returns {"sheet": path|None, "count": int, "timestamps": [abs times]}.
     """
     result = {"sheet": None, "count": 0, "timestamps": []}
+    fallback_reason = tracker_fallback_reason(detection_records)
+    if fallback_reason is not None:
+        result["tracker_fallback"] = True
+        result["reason"] = TRACKER_FALLBACK_MESSAGE
+        result["fallback_reason"] = fallback_reason
+        return result
     if not detection_records:
         return result
     # With FACE_DETECTION_STRIDE > 1 only sampled frames actually ran detection;
@@ -425,6 +433,9 @@ def main() -> None:
         except (ValueError, OSError) as exc:
             print(f"[WARN] could not read tracker sidecar {track_path}: {exc}")
             detection_records = None
+    tracker_fallback = tracker_fallback_reason(detection_records)
+    if tracker_fallback is not None:
+        print(f"[WARN] {TRACKER_FALLBACK_MESSAGE} ({tracker_fallback})")
 
     crop = None
     if crop_path and Path(crop_path).exists():
@@ -478,6 +489,8 @@ def main() -> None:
         "contact_sheet": str(sheet_path),
         "contact_sheet_frames": len(times),
         "face_tracking": crop,
+        "tracker_fallback": tracker_fallback is not None,
+        "tracker_fallback_reason": tracker_fallback,
         "crop_violation": crop_violation,
         "glitch_formula": (
             "glitch_score = 1.0*jumps_per_min + 5.0*target_switches "

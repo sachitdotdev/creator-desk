@@ -117,6 +117,19 @@ _SENDCMD_RE = re.compile(r"^\s*([\d.]+)\s+overlay\s+x\s+(-?[\d.]+)")
 # or times out. A successful scan with no findings still returns an empty list.
 UNAVAILABLE = "unavailable"
 
+# When crop generation falls back (model missing, capture failure, exception),
+# the tracker replaces its sidecar with explicit metadata instead of per-frame
+# detections. Tools must report that tracking metrics are unavailable rather
+# than silently reading detections left by an earlier render of the same clip.
+TRACKER_FALLBACK_MESSAGE = "tracker fallback used, tracking metrics unavailable"
+
+
+def tracker_fallback_reason(detection_records) -> str | None:
+    """Return the reason when a sidecar is an explicit fallback marker."""
+    if isinstance(detection_records, dict) and detection_records.get("fallback") is True:
+        return str(detection_records.get("reason") or "unknown")
+    return None
+
 
 class CropSample(NamedTuple):
     time: float
@@ -259,8 +272,33 @@ def compute_crop_metrics(
 
     ``detection_records`` (optional) is the tracker's per-frame sidecar, a list
     of dicts with at least a ``detected`` bool; when provided it is used for
-    the exact ``no_detection`` count instead of the flat-run heuristic.
+    the exact ``no_detection`` count instead of the flat-run heuristic. A
+    fallback marker sidecar yields an explicit "unavailable" result instead.
     """
+    fallback_reason = tracker_fallback_reason(detection_records)
+    if fallback_reason is not None:
+        sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
+        return {
+            "available": False,
+            "fallback": True,
+            "reason": TRACKER_FALLBACK_MESSAGE,
+            "fallback_reason": fallback_reason,
+            "n_samples": len(samples),
+            "crop_violation": {
+                "available": False,
+                "source": "tracker_fallback",
+                "reason": TRACKER_FALLBACK_MESSAGE,
+                "margin_px": float(crop_margin_px),
+                "half_window_px": (float(target_width) / 2.0) / sf,
+                "violations": 0,
+                "samples": 0,
+                "violation_fraction": 0.0,
+                "longest_violation": {
+                    "start": None, "end": None, "duration_s": 0.0, "count": 0,
+                },
+            },
+        }
+
     sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
     crop_x = [round((target_width / 2.0 - s.overlay_x) / sf, 2) for s in samples]
     times = [s.time for s in samples]
@@ -402,8 +440,27 @@ def crop_violation_metrics(
     violations too - the crop cannot be on a face that was never chosen.
 
     Returns a dict with the violation fraction, the violating sample count and
-    the longest consecutive violation run (timestamps + duration).
+    the longest consecutive violation run (timestamps + duration). A fallback
+    marker sidecar is reported as unavailable, never as a clean trajectory.
     """
+    fallback_reason = tracker_fallback_reason(detection_records)
+    if fallback_reason is not None:
+        sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
+        return {
+            "available": False,
+            "source": "tracker_fallback",
+            "reason": TRACKER_FALLBACK_MESSAGE,
+            "fallback_reason": fallback_reason,
+            "margin_px": float(margin_px),
+            "half_window_px": (float(target_width) / 2.0) / sf,
+            "violations": 0,
+            "samples": 0,
+            "violation_fraction": 0.0,
+            "longest_violation": {
+                "start": None, "end": None, "duration_s": 0.0, "count": 0,
+            },
+        }
+
     sf = scale_factor if scale_factor and scale_factor > 0 else 1.0
     half = (float(target_width) / 2.0) / sf  # crop window half-size, source px
     tol = max(half - float(margin_px), 0.0)

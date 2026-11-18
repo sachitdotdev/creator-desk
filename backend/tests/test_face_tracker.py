@@ -205,6 +205,21 @@ def test_select_target_hysteresis_dwells():
     assert chosen is new_big
 
 
+def test_select_target_reacquires_sole_new_face_after_dwell():
+    state = {"target": None, "since": 0.0}
+    cur = face(0, 0, 100, 100)  # cx 50, area 10000
+    _ = _select_target([cur], 0.0, state)
+    # The only detection is a different, clearly larger face far outside
+    # SAME_TARGET_PX. best == nearest (one face), so the old "best is not
+    # nearest" guard kept the stale cur target forever.
+    new_face = face(600, 0, 1000, 300)  # cx 800, area 120000
+    chosen = _select_target([new_face], 0.5, state)
+    assert chosen is cur  # dwell has not elapsed
+    chosen = _select_target([new_face], 2.0, state)
+    assert chosen is new_face
+    assert state["target"] is new_face
+
+
 def test_select_target_same_face_returns_current_detection():
     state = {"target": None, "since": 0.0}
     cur = face(0, 0, 200, 200)  # cx 100
@@ -305,6 +320,36 @@ def test_detect_cuts_real_ffmpeg_hard_cut(monkeypatch, tmp_path):
     assert any(abs(c - 1.0) <= 0.2 for c in cuts), cuts
 
 
+def _make_sized_source(tmp_path: Path, width: int, height: int) -> Path:
+    """Build a short solid-colour source of an arbitrary size via real ffmpeg."""
+    ffmpeg = face_tracker._ffmpeg()
+    if shutil.which(ffmpeg) is None and not Path(ffmpeg).exists():
+        pytest.skip("ffmpeg is required for the source-dimension fallback test")
+    video = tmp_path / f"source_{width}x{height}.mp4"
+    cmd = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"color=c=gray:s={width}x{height}:r=30:d=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == 0, proc.stderr
+    return video
+
+
+def test_center_fallback_uses_source_dimensions(monkeypatch, tmp_path):
+    """A non-16:9 source must drive the fallback overlay, not a hard-coded 16:9."""
+    video = _make_sized_source(tmp_path, 640, 480)  # 4:3
+    monkeypatch.setattr(face_tracker, "FACE_TRACKER_ENABLED", False)
+    sendcmd = tmp_path / "fallback_4x3.txt"
+    assert face_tracker.generate_sendcmd_file(
+        str(video), 0.0, 1.0, str(sendcmd)) is True
+    samples = parse_sendcmd(sendcmd)
+    assert samples
+    expected = (1080.0 / 2.0) - (640.0 / 2.0) * (1920.0 / 480.0)  # -740.0
+    assert abs(samples[0][1] - expected) < 0.05, samples[0]
+    assert abs(samples[0][1] - (-1166.67)) > 100.0  # not the 1920x1080 constant
+
+
 def test_detect_cuts_cached(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cuts"
     monkeypatch.setattr(face_tracker, "FACE_CUT_CACHE_DIR", cache_dir)
@@ -401,6 +446,54 @@ def test_capture_not_opened_writes_center_fallback(monkeypatch, tmp_path):
     assert face_tracker.generate_sendcmd_file(
         "src.webm", 0.0, 1.0, str(sendcmd)) is False
     _assert_center_fallback(sendcmd)
+
+
+def _assert_fallback_sidecar(sendcmd: Path, reason_fragment: str) -> None:
+    sidecar = sendcmd.with_suffix(".track.json")
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert data.get("fallback") is True
+    assert isinstance(data.get("reason"), str) and data["reason"]
+    assert reason_fragment in data["reason"]
+
+
+def test_model_missing_invalidates_stale_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "cv2", types.SimpleNamespace())
+    monkeypatch.setattr(face_tracker, "_model_file_exists", lambda: False)
+    monkeypatch.setattr(face_tracker, "_source_dimensions", lambda path: None)
+    sendcmd = tmp_path / "fallback_model_stale.txt"
+    sendcmd.with_suffix(".track.json").write_text(
+        json.dumps([{"frame": 0, "detected": True}]), encoding="utf-8")
+    assert face_tracker.generate_sendcmd_file(
+        "src.webm", 0.0, 1.0, str(sendcmd)) is False
+    _assert_fallback_sidecar(sendcmd, "model")
+
+
+def test_capture_not_opened_invalidates_stale_sidecar(monkeypatch, tmp_path):
+    install_fakes(monkeypatch, 0, {}, fps=30.0)  # FakeCap.isOpened() is False
+    monkeypatch.setattr(face_tracker, "detect_cuts", lambda *a, **k: [])
+    monkeypatch.setattr(face_tracker, "_source_dimensions", lambda path: None)
+    sendcmd = tmp_path / "fallback_cap_stale.txt"
+    sendcmd.with_suffix(".track.json").write_text(
+        json.dumps([{"frame": 0, "detected": True}]), encoding="utf-8")
+    assert face_tracker.generate_sendcmd_file(
+        "src.webm", 0.0, 1.0, str(sendcmd)) is False
+    _assert_fallback_sidecar(sendcmd, "capture")
+
+
+def test_exception_invalidates_stale_sidecar(monkeypatch, tmp_path):
+    install_fakes(monkeypatch, 30, {}, fps=30.0)
+    monkeypatch.setattr(face_tracker, "detect_cuts", lambda *a, **k: [])
+
+    def boom(path):
+        raise RuntimeError("detector exploded")
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=boom))
+    sendcmd = tmp_path / "fallback_exc_stale.txt"
+    sendcmd.with_suffix(".track.json").write_text(
+        json.dumps([{"frame": 0, "detected": True}]), encoding="utf-8")
+    assert face_tracker.generate_sendcmd_file(
+        "src.webm", 0.0, 1.0, str(sendcmd)) is False
+    _assert_fallback_sidecar(sendcmd, "detector exploded")
 
 
 def test_detect_cuts_runs_without_holding_gpu_lock(monkeypatch, tmp_path):

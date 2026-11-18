@@ -11,7 +11,10 @@ original implementation.
 
 A per-frame detection sidecar (``crop_<clip_id>.track.json``) is always
 written next to the sendcmd so review tooling can build the missed-frames
-sheet and report an exact no-detection rate.
+sheet and report an exact no-detection rate. When crop generation falls back
+(disabled / model missing / capture failure / exception) the sidecar is instead
+replaced with ``{"fallback": true, "reason": "..."}`` so old detections from a
+previous render of the same clip are never reused.
 
 All behavior is driven by config values in :mod:`app.core.config` so it can be
 tuned or disabled without touching this file:
@@ -218,9 +221,11 @@ def _select_target(faces: list[dict], now: float, state: dict) -> dict | None:
     matched = math.dist(_center(nearest), (cur_cx, cur_cy)) <= SAME_TARGET_PX
 
     # A different face must be clearly larger AND persistent before we switch.
-    # Check this before following ``nearest`` so the existing dwell rule stays
-    # intact when both faces remain in frame.
-    if (best is not nearest
+    # ``best is not nearest`` covers a second, larger face in frame; ``not
+    # matched`` covers the case where the old target left the frame and the only
+    # detection is a new face (best == nearest because there is a single face).
+    # Without the latter the stale target was returned indefinitely.
+    if ((not matched or best is not nearest)
             and FACE_TARGET_PREFER_LARGEST
             and best["area"] > cur["area"] * SWITCH_MARGIN
             and (now - state["since"]) >= FACE_TARGET_MIN_DWELL_S):
@@ -242,7 +247,9 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
     # (the default) this function's output and control flow are unchanged.
     debug_enabled = debug or os.environ.get("FACE_TRACKER_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
     if not FACE_TRACKER_ENABLED:
-        _write_center_sendcmd(sendcmd_path, start_time, duration, target_width)
+        _write_center_sendcmd(sendcmd_path, start_time, duration, target_width,
+                              video_path)
+        _write_fallback_sidecar(sendcmd_path, "face tracker disabled")
         return True
 
     try:
@@ -252,7 +259,9 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
 
         if not _model_file_exists():
             print(f"DEBUG: YOLO model not found at {FACE_MODEL}!")
-            _write_center_sendcmd(sendcmd_path, start_time, duration, target_width)
+            _write_center_sendcmd(sendcmd_path, start_time, duration, target_width,
+                                  video_path)
+            _write_fallback_sidecar(sendcmd_path, "YOLO model not found")
             return False
 
         # CPU-only scene scan: keep it outside the GPU lock so other VRAM
@@ -268,7 +277,9 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
 
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
-                    _write_center_sendcmd(sendcmd_path, start_time, duration, target_width)
+                    _write_center_sendcmd(sendcmd_path, start_time, duration, target_width,
+                                          video_path)
+                    _write_fallback_sidecar(sendcmd_path, "capture not opened")
                     return False
 
                 cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
@@ -448,6 +459,7 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
         import traceback
         print(f"DEBUG: Face tracking failed: {type(e).__name__}: {e}")
         traceback.print_exc()
+        _write_fallback_sidecar(sendcmd_path, f"{type(e).__name__}: {e}")
         try:
             with open(sendcmd_path, "w") as f:
                 f.write("0.000 overlay x -420.0;\n")
@@ -456,13 +468,78 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
         return False
 
 
+def _source_dimensions(video_path: str) -> tuple[int, int] | None:
+    """Best-effort ``(width, height)`` probe of a source video via ffprobe.
+
+    The center-crop fallback uses this so its overlay offset is derived from
+    the real frame size instead of hard-coded 16:9 constants. Returns None when
+    the source cannot be probed; the caller then uses a documented last resort.
+    """
+    import shutil
+
+    exe = _ffmpeg()
+    if exe.lower().endswith("ffmpeg.exe"):
+        probe = exe[:-10] + "ffprobe.exe"
+    elif exe.endswith("ffmpeg"):
+        probe = exe[:-6] + "ffprobe"
+    else:
+        probe = shutil.which("ffprobe") or "ffprobe"
+    cmd = [probe, "-v", "error", "-select_streams", "v:0",
+           "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+           str(video_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        parts = line.strip().split("x")
+        if len(parts) == 2:
+            try:
+                width, height = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            if width > 0 and height > 0:
+                return width, height
+    return None
+
+
+def _write_fallback_sidecar(sendcmd_path: str, reason: str) -> None:
+    """Replace any stale per-frame sidecar with explicit fallback metadata.
+
+    Review tools detect ``{"fallback": true, ...}`` and report that tracking
+    metrics are unavailable instead of reading detections left behind by an
+    earlier (successful) render of the same clip.
+    """
+    track_path = os.path.splitext(sendcmd_path)[0] + ".track.json"
+    try:
+        with open(track_path, "w", encoding="utf-8") as f:
+            json.dump({"fallback": True, "reason": reason}, f)
+    except OSError as exc:  # sidecar is best effort
+        print(f"DEBUG: could not write tracker fallback sidecar {track_path}: {exc}")
+
+
 def _write_center_sendcmd(sendcmd_path: str, start_time: float, duration: float,
-                          target_width: int) -> None:
-    """Best-effort center crop when face tracking is disabled."""
+                          target_width: int, video_path: str | None = None) -> None:
+    """Best-effort center crop when face tracking is disabled or unavailable.
+
+    The overlay offset is computed from the source frame size (when it can be
+    probed) and the requested crop width, never from assumed 1920x1080
+    dimensions. The constant below is only a last resort for an unreadable
+    source.
+    """
     os.makedirs(os.path.dirname(sendcmd_path), exist_ok=True)
-    # Center of source frame: overlay_x = target_width/2 - (orig_width/2)*scale_factor.
-    # For a 1920x1080 source this is 540 - 960*1.777 = -1166.7.
-    overlay_x = (target_width / 2.0) - 960.0 * (1920.0 / 1080.0)
+    dims = _source_dimensions(video_path) if video_path else None
+    if dims is not None:
+        original_width, original_height = dims
+        scale_factor = 1920.0 / float(original_height)
+        center_x = original_width / 2.0
+    else:
+        # Last resort only: the source could not be probed at all.
+        center_x = 960.0
+        scale_factor = 1920.0 / 1080.0
+    overlay_x = (target_width / 2.0) - center_x * scale_factor
     fps = 30.0
     n = max(1, round(duration * fps))
     lines = [f"{i / fps:.3f} overlay x {overlay_x:.2f};" for i in range(n)]

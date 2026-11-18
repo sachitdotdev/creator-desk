@@ -60,6 +60,19 @@ def test_no_detection_gap_and_longest_hold():
     assert m["no_detection_fraction"] > 0
 
 
+def test_fallback_sidecar_is_reported_unavailable():
+    marker = {"fallback": True, "reason": "YOLO model not found"}
+    m = compute_crop_metrics(trajectory([0.0] * 30), detection_records=marker)
+    assert m["available"] is False
+    assert m["fallback"] is True
+    assert m["reason"] == render_metrics.TRACKER_FALLBACK_MESSAGE
+    assert m["fallback_reason"] == "YOLO model not found"
+    v = crop_violation_metrics(marker, scale_factor=1.0)
+    assert v["available"] is False
+    assert v["source"] == "tracker_fallback"
+    assert v["reason"] == render_metrics.TRACKER_FALLBACK_MESSAGE
+
+
 def test_empty_trajectory():
     m = compute_crop_metrics([])
     assert m["glitch_score"] == 0.0
