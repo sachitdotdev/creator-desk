@@ -579,9 +579,8 @@ def test_whisper_transcribe_releases_all_model_refs(
 def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
     from app.services import face_tracker
 
-    model_path = tmp_path / "face.pt"
-    model_path.write_bytes(b"fake")
-    monkeypatch.setattr(face_tracker, "FACE_MODEL", str(model_path))
+    # Detector is injected below; no YOLO weights file is needed on disk.
+    monkeypatch.setattr(face_tracker, "_model_file_exists", lambda: True)
     monkeypatch.setitem(
         sys.modules,
         "cv2",

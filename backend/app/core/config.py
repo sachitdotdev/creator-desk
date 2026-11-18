@@ -147,6 +147,8 @@ DATABASE_URL = f"sqlite:///{DB_PATH}"
 # --------------------------------------------------------------------------- Face tracking (Phase 6 prep)
 # All face-tracker behavior below is gated by config so it can be tuned or
 # disabled without changing the sendcmd file format that render_service consumes.
+# FACE_MODEL is re-exported from core.paths: repo-relative by default, with an
+# optional FACE_MODEL_PATH environment override (never a hardcoded local path).
 FACE_TRACKER_ENABLED = os.getenv("FACE_TRACKER_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 FACE_MODEL_CONF = float(os.getenv("FACE_DETECTION_CONF", "0.25"))       # YOLO confidence threshold
 FACE_MODEL_IMGSZ = int(os.getenv("FACE_DETECTION_IMGSZ", "640"))        # YOLO inference size

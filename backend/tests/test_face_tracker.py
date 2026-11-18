@@ -97,6 +97,8 @@ class FakeCap:
 
 
 def install_fakes(monkeypatch, n_frames, per_frame, fps=30.0):
+    # Injecting a detector means no YOLO weights file is needed (CI has none).
+    monkeypatch.setattr(face_tracker, "_model_file_exists", lambda: True)
     fake_cv2 = types.SimpleNamespace(
         CAP_PROP_POS_MSEC=0, CAP_PROP_FPS=5, CAP_PROP_FRAME_WIDTH=3,
         CAP_PROP_FRAME_HEIGHT=4, VideoCapture=lambda path: FakeCap(n_frames, fps),
@@ -121,6 +123,7 @@ def overlay_to_cx(overlay_x, sf=1920 / 1080, target_width=1080):
 
 
 # --------------------------------------------------------------------------- spring
+from app.services import face_tracker
 from app.services.face_tracker import _CriticallyDampedSpring
 
 
@@ -245,9 +248,6 @@ def test_detect_cuts_cached(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- end-to-end: cut reset in generate_sendcmd_file
-from app.services import face_tracker
-
-
 def test_sendcmd_resets_at_shot_cut(monkeypatch, tmp_path):
     # Two shots: face at cx=500 (shot 1), cut at 1.0s, face at cx=1500 (shot 2).
     # (cx must stay within [cx_min, cx_max] = [303.75, 1616.25] for 1920x1080.)

@@ -100,6 +100,15 @@ def _ffmpeg() -> str:
     return FFMPEG_PATH or shutil.which("ffmpeg") or "ffmpeg"
 
 
+def _model_file_exists() -> bool:
+    """Whether the YOLO weights file is present on disk.
+
+    Kept as its own function so tests that inject a fake detector can override
+    the check and run without a model file (CI has no torch/ultralytics/model).
+    """
+    return bool(FACE_MODEL) and os.path.exists(FACE_MODEL)
+
+
 def detect_cuts(video_path: str, start: float, duration: float,
                 threshold: float) -> list[float]:
     """Return cut times (clip-relative seconds) via ffmpeg scene detection.
@@ -222,7 +231,7 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
 
         os.makedirs(os.path.dirname(sendcmd_path), exist_ok=True)
 
-        if not os.path.exists(FACE_MODEL):
+        if not _model_file_exists():
             print(f"DEBUG: YOLO model not found at {FACE_MODEL}!")
             return False
 
