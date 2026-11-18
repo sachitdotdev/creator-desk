@@ -32,7 +32,7 @@ CreatorDesk takes raw long-form video, transcribes it, uses a local LLM to find 
 - **💰 Monetization Ready:** Enforces a minimum 60-second duration for every clip to qualify for TikTok Creator Rewards.
 - **🎥 Dynamic Rendering:** Uses FFmpeg to crop to 9:16, apply a slow Ken Burns zoom, and burn in dynamic ASS karaoke captions.
 - **💻 Modern Dashboard:** A React + Vite + Tailwind CSS UI with live status polling and clip filtering.
-- **🤖 Autonomous Agents:** Configured with OpenHands `AGENTS.md`, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
+- **🤖 Autonomous Agents:** Configured with the root `AGENTS.md`, custom Microagents, and Stop Hooks to allow AI to safely contribute to the codebase.
 
 ## 🏗️ Architecture Overview
 
@@ -93,6 +93,72 @@ npm run dev
 
 Open your browser and navigate to `http://localhost:5173` (or the port Vite provides). The app connects to the backend API at `http://localhost:8001`.
 
+## 🧠 LLM model setup
+
+> The Ollama / port-8001 instructions above are legacy. The pipeline now uses a
+> local vLLM server as described here.
+
+CreatorDesk does not call a hosted LLM API. It runs a local **vLLM** server
+(OpenAI-compatible, `http://127.0.0.1:8002/v1`), started automatically by
+`start.bat` through `services\vllm\start_vllm.bat`. Readiness is checked at
+`GET http://127.0.0.1:8002/health`.
+
+**Model location.** The model directory is passed to vLLM as `--model` and is
+controlled by the `VLLM_MODEL` environment variable. Set it in either:
+
+- the gitignored `launcher.env.local.bat` (copy `launcher.env.local.bat.example`
+  and uncomment/adjust the `VLLM_MODEL` line), or
+- your shell environment before running `start.bat`.
+
+If `VLLM_MODEL` is empty or unset, `services\vllm\start_vllm.bat` falls back to
+its built-in default path, so an existing setup keeps working unchanged.
+
+**GPU memory.** The VRAM budget is the `--gpu-memory-utilization` flag in the
+`services\vllm` launch script (currently `0.60`). Expected hardware: a **12 GB
+GPU** runs the default AWQ model at `--gpu-memory-utilization 0.60` alongside the
+Whisper and face-tracking stages. Adjust that flag to match your card.
+
+**Where the model comes from.** The model served at runtime is a local directory
+named `meissa-7b-awq`. It is produced from the public base model repo
+[`Orion-zhen/Meissa-Qwen2.5-7B-Instruct`](https://huggingface.co/Orion-zhen/Meissa-Qwen2.5-7B-Instruct)
+using the AWQ (W4A16) quantization recipe in `backend/quantize_meissa.py` (its
+calibration dataset is `neuralmagic/calibration`). To obtain it:
+
+1. Download the base model from the Hugging Face repo linked above.
+2. Install `transformers`, `datasets` and `llmcompressor`, adjust `model_id` and
+   `output_dir` in `backend/quantize_meissa.py`, then run
+   `python backend/quantize_meissa.py` (about 10-15 minutes). It writes the
+   `meissa-7b-awq` directory.
+3. **Ensure the local vLLM runtime is present (prerequisite).** The
+   `services\vllm` directory — containing `start_vllm.bat` and the bundled
+   Python/vLLM runtime — is **gitignored** because it is too large for git
+   (`services/vllm/` in `.gitignore`). A fresh clone therefore does not include
+   it, and it must be present at the repository root before you run `start.bat`;
+   otherwise the launcher has no vLLM server to start. The layout expected by
+   `start.bat` is `services\vllm\start_vllm.bat`, which launches vLLM **0.27.1**
+   from a bundled **Python 3.13** on native Windows (no WSL/Docker) and serves
+   the OpenAI-compatible API on port **8002**.
+
+   > **Runtime setup: TBD** — the exact procedure for creating this bundled
+   > runtime (install commands / bootstrap script) is not documented in this
+   > repository. No install commands are given here; only the facts stated
+   > above are known.
+4. Point `VLLM_MODEL` at that directory (or rely on the fallback) and run
+   `start.bat`.
+
+> **Download link for the pre-quantized `meissa-7b-awq` build: TBD** — the AWQ
+> artifact itself is not published in this repository; reproduce it with the
+> script above. **License:** none documented in this repository — check the base
+> model's Hugging Face card before use.
+
+**Using a different OpenAI-compatible model.** Point `VLLM_MODEL` at any model
+directory vLLM can serve, and update the model *name* the backend sends with each
+request: the default `meissa-7b-awq` lives in
+`backend/app/services/llm_service.py` (`self.model = model or "meissa-7b-awq"`).
+The `OLLAMA_MODEL` value in `backend/app/core/config.py` is vestigial and no
+longer used by the vLLM pipeline. Keep the name consistent with what vLLM reports
+at `GET /v1/models`.
+
 ## 📂 Project Structure
 
 - **`backend/`**: FastAPI application (Python, uvicorn)
@@ -101,7 +167,7 @@ Open your browser and navigate to `http://localhost:5173` (or the port Vite prov
 - **`backend/app/services/`**: Core business logic (llm, render, whisper)
 - **`frontend/src/`**: React components, API wrappers
 - **`.openhands/`**: Agent skills, setup scripts, hooks
-- **`AGENTS.md`**: AI agent configuration guide
+- **`AGENTS.md`**: root AI agent configuration guide
 
 ---
 
