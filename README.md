@@ -93,6 +93,58 @@ npm run dev
 
 Open your browser and navigate to `http://localhost:5173` (or the port Vite provides). The app connects to the backend API at `http://localhost:8001`.
 
+## 🧠 LLM model setup
+
+> The Ollama / port-8001 instructions above are legacy. The pipeline now uses a
+> local vLLM server as described here.
+
+CreatorDesk does not call a hosted LLM API. It runs a local **vLLM** server
+(OpenAI-compatible, `http://127.0.0.1:8002/v1`), started automatically by
+`start.bat` through `services\vllm\start_vllm.bat`. Readiness is checked at
+`GET http://127.0.0.1:8002/health`.
+
+**Model location.** The model directory is passed to vLLM as `--model` and is
+controlled by the `VLLM_MODEL` environment variable. Set it in either:
+
+- the gitignored `launcher.env.local.bat` (copy `launcher.env.local.bat.example`
+  and uncomment/adjust the `VLLM_MODEL` line), or
+- your shell environment before running `start.bat`.
+
+If `VLLM_MODEL` is empty or unset, `services\vllm\start_vllm.bat` falls back to
+its built-in default path, so an existing setup keeps working unchanged.
+
+**GPU memory.** The VRAM budget is the `--gpu-memory-utilization` flag in the
+`services\vllm` launch script (currently `0.60`). Expected hardware: a **12 GB
+GPU** runs the default AWQ model at `--gpu-memory-utilization 0.60` alongside the
+Whisper and face-tracking stages. Adjust that flag to match your card.
+
+**Where the model comes from.** The model served at runtime is a local directory
+named `meissa-7b-awq`. It is produced from the public base model repo
+[`Orion-zhen/Meissa-Qwen2.5-7B-Instruct`](https://huggingface.co/Orion-zhen/Meissa-Qwen2.5-7B-Instruct)
+using the AWQ (W4A16) quantization recipe in `backend/quantize_meissa.py` (its
+calibration dataset is `neuralmagic/calibration`). To obtain it:
+
+1. Download the base model from the Hugging Face repo linked above.
+2. Install `transformers`, `datasets` and `llmcompressor`, adjust `model_id` and
+   `output_dir` in `backend/quantize_meissa.py`, then run
+   `python backend/quantize_meissa.py` (about 10-15 minutes). It writes the
+   `meissa-7b-awq` directory.
+3. Point `VLLM_MODEL` at that directory (or rely on the fallback) and run
+   `start.bat`.
+
+> **Download link for the pre-quantized `meissa-7b-awq` build: TBD** — the AWQ
+> artifact itself is not published in this repository; reproduce it with the
+> script above. **License:** none documented in this repository — check the base
+> model's Hugging Face card before use.
+
+**Using a different OpenAI-compatible model.** Point `VLLM_MODEL` at any model
+directory vLLM can serve, and update the model *name* the backend sends with each
+request: the default `meissa-7b-awq` lives in
+`backend/app/services/llm_service.py` (`self.model = model or "meissa-7b-awq"`).
+The `OLLAMA_MODEL` value in `backend/app/core/config.py` is vestigial and no
+longer used by the vLLM pipeline. Keep the name consistent with what vLLM reports
+at `GET /v1/models`.
+
 ## 📂 Project Structure
 
 - **`backend/`**: FastAPI application (Python, uvicorn)
