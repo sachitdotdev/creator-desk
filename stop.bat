@@ -9,6 +9,7 @@ rem have no PID file and are left untouched. Unrelated python/node processes
 rem are never targeted.
 set "ROOT=%~dp0"
 set "RUN_DIR=%ROOT%.run"
+set "STOP_FAILED=0"
 
 echo.
 echo Stopping CreatorDesk services ...
@@ -28,6 +29,10 @@ for %%P in (8002 8080 5173) do (
 )
 if !STILL! EQU 0 echo All CreatorDesk ports are free.
 echo.
+if "!STOP_FAILED!"=="1" (
+    echo One or more services could not be stopped; their PID files were kept for retry.
+    exit /b 1
+)
 exit /b 0
 
 :stop_one
@@ -55,8 +60,10 @@ if errorlevel 1 (
 taskkill /PID %S_PID% /T /F >nul 2>&1
 if errorlevel 1 (
     rem Keep the PID file so the operator can retry stopping this process.
-    echo   [%S_NAME%] could not stop PID %S_PID% - PID file kept for retry: %S_PID_FILE%
-    exit /b 1
+    echo   [%S_NAME%] could not stop PID %S_PID% - PID file kept for retry: "%S_PID_FILE%"
+    set "STOP_FAILED=1"
+    rem Do not exit with an error here: keep stopping the remaining services.
+    exit /b 0
 )
 del "%S_PID_FILE%" >nul 2>&1
 echo   [%S_NAME%] stopped PID %S_PID% and its children on port %S_PORT%.

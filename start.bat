@@ -179,11 +179,17 @@ rem curl (max 3s) cannot push total wait past W_TIMEOUT. A healthy check exits
 rem immediately, well before the budget is spent.
 set /a W_BUDGET_MS=%W_TIMEOUT%*1000-2000
 if !W_BUDGET_MS! LSS 1000 set /a W_BUDGET_MS=1000
-for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_START_MS=%%T"
+rem Windows PowerShell 5.1 (powershell.exe) has no [Environment]::TickCount64.
+rem Epoch milliseconds from [DateTimeOffset]::UtcNow are 64-bit, so keep them as
+rem a string in batch and let PowerShell return only the small elapsed delta;
+rem every set /a below then stays within the 32-bit range.
+call :clock_ms W_START_MS
+if errorlevel 1 goto wait_clock_fail
 set /a W_TRY=0
 :wait_loop
-for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_NOW_MS=%%T"
-set /a W_REMAIN_MS=W_BUDGET_MS-(W_NOW_MS-W_START_MS)
+call :elapsed_ms W_ELAPSED_MS "!W_START_MS!"
+if errorlevel 1 goto wait_clock_fail
+set /a W_REMAIN_MS=W_BUDGET_MS-!W_ELAPSED_MS!
 if !W_REMAIN_MS! LEQ 0 goto wait_fail
 set /a W_CURL_S=(!W_REMAIN_MS!+999)/1000
 if !W_CURL_S! GTR 3 set /a W_CURL_S=3
@@ -194,8 +200,9 @@ if not errorlevel 1 (
     exit /b 0
 )
 rem Sleep only while a full delay still fits inside the remaining budget.
-for /f %%T in ('powershell -NoProfile -Command "[Environment]::TickCount64"') do set "W_NOW_MS=%%T"
-set /a W_REMAIN_MS=W_BUDGET_MS-(W_NOW_MS-W_START_MS)
+call :elapsed_ms W_ELAPSED_MS "!W_START_MS!"
+if errorlevel 1 goto wait_clock_fail
+set /a W_REMAIN_MS=W_BUDGET_MS-!W_ELAPSED_MS!
 if !W_REMAIN_MS! GEQ 2000 ping -n 2 127.0.0.1 >nul 2>&1
 goto wait_loop
 :wait_fail
@@ -204,3 +211,34 @@ echo ERROR: %W_NAME% did not become healthy within %W_TIMEOUT%s.
 echo   Health URL: %W_URL%
 echo   Log file  : %W_LOG%
 exit /b 1
+:wait_clock_fail
+echo.
+echo ERROR: %W_NAME% readiness clock unavailable - could not read a numeric
+echo   millisecond timestamp from PowerShell. Aborting instead of looping.
+echo   Health URL: %W_URL%
+exit /b 1
+
+rem ---------------------------------------------------------------------------
+:clock_ms
+rem %~1 = variable name that receives a 64-bit epoch-ms string.
+set "%~1="
+for /f "delims=" %%T in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "%~1=%%T"
+if not defined %~1 exit /b 1
+call :is_digits "!%~1!"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:elapsed_ms
+rem %~1 = variable that receives elapsed ms (small, fits 32-bit).
+rem %~2 = the start epoch-ms string recorded by :clock_ms.
+set "%~1="
+for /f "delims=" %%T in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [int64]%~2"') do set "%~1=%%T"
+if not defined %~1 exit /b 1
+call :is_digits "!%~1!"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:is_digits
+rem Succeed only for a non-empty string of ASCII digits (any length).
+echo(%~1| findstr /R /C:"^[0-9][0-9]*$" >nul 2>&1
+exit /b !errorlevel!
