@@ -123,19 +123,27 @@ def test_filtergraph_zoom_stage_is_optional(monkeypatch, tmp_path):
     monkeypatch.setattr(edit_compiler, "RENDERS_DIR", tmp_path)
     (tmp_path / "crop.txt").write_text("0.000 overlay x -1166.67;\n", encoding="utf-8")
     plain = compile_plan([], "center_crop", "subs.ass", sendcmd_path="crop.txt")[0]
-    assert "crop@zc" not in plain and "sendcmd=f='zoom.txt'" not in plain
+    assert "crop@zc" not in plain and "concat=n=" not in plain
 
+    shots = [
+        {"start": 0.0, "end": 1.0, "crop": [640, 1138, 220, 300]},
+        {"start": 1.0, "end": 2.0, "crop": [1080, 1920, 0, 0]},
+    ]
     zoomed = compile_plan(
         [], "center_crop", "subs.ass", sendcmd_path="crop.txt",
-        zoom_sendcmd_path="zoom.txt", zoom_initial=(640, 1138, 220, 300),
+        zoom_shots=shots,
     )[0]
-    assert "crop=1080:1920:0:0,sendcmd=f='zoom.txt',crop@zc=640:1138:220:300,scale=1080:1920[out_v]" in zoomed
-    assert zoomed.count("sendcmd=f=") == 2          # pan + zoom, no double zoom
+    assert "crop@zc" not in zoomed and "sendcmd=f='zoom.txt'" not in zoomed
+    assert "crop=1080:1920:0:0[vbase];[vbase]split=2[zsrc0][zsrc1]" in zoomed
+    assert "[zsrc0]trim=start=0.000:end=1.000,setpts=PTS-STARTPTS,crop=640:1138:220:300,scale=1080:1920,setsar=1[zseg0]" in zoomed
+    assert "[zsrc1]trim=start=1.000,setpts=PTS-STARTPTS,crop=1080:1920:0:0,scale=1080:1920,setsar=1[zseg1]" in zoomed
+    assert "[zseg0][zseg1]concat=n=2:v=1:a=0[out_v]" in zoomed
+    assert zoomed.count("sendcmd=f=") == 1          # pan only; no zoom sendcmd
     assert "color" not in zoomed
 
 
-def test_zoom_sendcmd_targets_named_crop_filter(monkeypatch, tmp_path):
-    """Every zoom command must address the named `crop@zc` filter instance."""
+def test_zoom_plan_shots_become_fixed_crops(monkeypatch, tmp_path):
+    """Each plan shot must contribute one fixed crop, never a runtime resize."""
     monkeypatch.setattr(face_tracker, "detect_cuts", lambda *a, **k: [1.0])
     monkeypatch.setattr(face_tracker, "_source_dimensions", lambda p: (SRC_W, SRC_H))
     records = [
@@ -151,10 +159,14 @@ def test_zoom_sendcmd_targets_named_crop_filter(monkeypatch, tmp_path):
         str(crop), "src.mp4", 0.0, 2.0, str(zoom),
     )
     assert plan.active and len(plan.shots) == 2
-    lines = zoom.read_text(encoding="utf-8").splitlines()
-    assert lines
-    assert all(" crop@zc " in line for line in lines), lines
-    assert not any(" zc " in line or " overlay " in line for line in lines), lines
+    vf = compile_plan(
+        [], "center_crop", "subs.ass", sendcmd_path="crop.txt",
+        zoom_shots=plan.shots,
+    )[0]
+    for shot in plan.shots:
+        w, h, x, y = shot["crop"]
+        assert f"crop={w}:{h}:{x}:{y},scale=1080:1920,setsar=1" in vf
+    assert "crop@zc" not in vf
 
 
 # --------------------------------------------------------------------------- real FFmpeg
@@ -262,8 +274,9 @@ def test_zoom_render_stays_vertical_with_audio(monkeypatch, tmp_path):
     )
     vf = compile_plan(
         [], "center_crop", "subs.ass", sendcmd_path="crop.txt",
-        zoom_sendcmd_path="zoom.txt", zoom_initial=plan.initial,
+        zoom_shots=plan.shots,
     )[0]
+    assert "crop@zc" not in vf and "concat=n=2:v=1:a=0" in vf
     out = tmp_path / "out.mp4"
     rendered = _run([
         _tool("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
@@ -360,22 +373,73 @@ def _raw_frame_at(ffmpeg: str, video: Path, seconds: float, cwd: Path) -> bytes:
     return proc.stdout
 
 
-@pytest.mark.skipif(not HAVE_TOOLS, reason="ffmpeg/ffprobe are required")
-def test_zoom_render_changes_window_at_each_cut(monkeypatch, tmp_path):
-    ffmpeg = _tool("ffmpeg")
-    src = tmp_path / "multishot.mp4"
-    made = _run([
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=red:s=1920x1080:r=30:d=1.5",
-        "-f", "lavfi", "-i", "color=c=green:s=1920x1080:r=30:d=1.5",
-        "-f", "lavfi", "-i", "color=c=blue:s=1920x1080:r=30:d=1.5",
+def _probe_video(ffprobe: str, path: Path, cwd: Path) -> tuple[int, float]:
+    """Return (decoded frame count, duration) of a video stream."""
+    proc = _run([
+        ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames,duration", "-of", "json", str(path),
+    ], cwd)
+    assert proc.returncode == 0, proc.stderr
+    stream = json.loads(proc.stdout)["streams"][0]
+    return int(stream["nb_read_frames"]), float(stream["duration"])
+
+
+# Spatial markers: a coloured block at a known source position in each shot.
+# "green" in FFmpeg is 0x008000, so use "lime" for pure 0x00ff00.
+MARKER_CX, MARKER_CY = 960.0, 470.0
+SHOT_COLORS = ("red", "lime", "blue")
+SHOT_TIMES = (0.75, 2.25, 3.75)
+
+
+def _make_marker_multishot(ffmpeg: str, cwd: Path) -> Path:
+    """3 x 1.5 s 1920x1080 shots (wide/close-up/wide) with distinct markers."""
+    shots: list[Path] = []
+    for i, color in enumerate(SHOT_COLORS):
+        shot = cwd / f"shot_{i}.mp4"
+        made = _run([
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30:d=1.5",
+            "-vf", f"drawbox=x=900:y=430:w=120:h=80:color={color}:t=fill",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            str(shot),
+        ], cwd)
+        assert made.returncode == 0, made.stderr
+        shots.append(shot)
+    src = cwd / "multishot.mp4"
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    for shot in shots:
+        cmd += ["-i", str(shot)]
+    cmd += [
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:d=4.5",
         "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
         "-map", "[v]", "-map", "3:a",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-shortest", str(src),
-    ], tmp_path)
+    ]
+    made = _run(cmd, cwd)
     assert made.returncode == 0, made.stderr
+    return src
+
+
+def _render_zoom(ffmpeg: str, vf: str, cwd: Path, out: Path, duration: float):
+    return _run([
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
+        "-i", str(cwd / "multishot.mp4"), "-t", f"{duration:.3f}",
+        "-filter_complex", vf, "-map", "[out_final]", "-map", "0:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", str(out),
+    ], cwd)
+
+
+@pytest.mark.skipif(not HAVE_TOOLS, reason="ffmpeg/ffprobe are required")
+def test_zoom_render_fixed_crops_temporal(monkeypatch, tmp_path):
+    """Real render of wide / close-up / wide shots with DIFFERENT crop sizes.
+
+    Checks 1080x1920 output, frame count + duration against the source and a
+    clean FFmpeg log.
+    """
+    ffmpeg, ffprobe = _tool("ffmpeg"), _tool("ffprobe")
+    src = _make_marker_multishot(ffmpeg, tmp_path)
 
     _install_multishot_detector(monkeypatch)
     crop = tmp_path / "crop.txt"
@@ -387,12 +451,9 @@ def test_zoom_render_changes_window_at_each_cut(monkeypatch, tmp_path):
         report_path=str(tmp_path / "zoom.json"),
     )
     assert plan.active and len(plan.shots) == 3
-    assert plan.shots[0]["zoom"] > 1.0
-    assert plan.shots[1]["zoom"] == 1.0
-    assert plan.shots[2]["zoom"] > 1.0
-    assert plan.shots[0]["crop"] != plan.shots[1]["crop"]
-    assert plan.shots[1]["crop"] != plan.shots[2]["crop"]
-    assert all(" crop@zc " in line for line in zoom.read_text(encoding="utf-8").splitlines())
+    assert [s["zoom"] > 1.0 for s in plan.shots] == [True, False, True]
+    crops = [s["crop"] for s in plan.shots]
+    assert crops[0] != crops[1] and crops[1] != crops[2]
 
     (tmp_path / "subs.ass").write_text(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
@@ -402,39 +463,34 @@ def test_zoom_render_changes_window_at_each_cut(monkeypatch, tmp_path):
     )
     vf = compile_plan(
         [], "center_crop", "subs.ass", sendcmd_path="crop.txt",
-        zoom_sendcmd_path="zoom.txt", zoom_initial=plan.initial,
+        zoom_shots=plan.shots,
     )[0]
+    assert "crop@zc" not in vf and "sendcmd=f='zoom.txt'" not in vf
+    assert vf.count("concat=n=3:v=1:a=0") == 1
+    for w, h, x, y in crops:
+        assert f"crop={w}:{h}:{x}:{y},scale=1080:1920,setsar=1" in vf
+
     out = tmp_path / "out.mp4"
-    rendered = _run([
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
-        "-i", str(src), "-t", "4.5", "-filter_complex", vf,
-        "-map", "[out_final]", "-map", "0:a",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest", str(out),
-    ], tmp_path)
+    rendered = _render_zoom(ffmpeg, vf, tmp_path, out, 4.5)
     assert rendered.returncode == 0, rendered.stderr
     low = rendered.stderr.lower()
     for bad in ("no such filter", "no option name", "error parsing a filter",
-                "error initializing filters", "could not find command target",
-                "unable to parse option value"):
+                "error initializing filters", "error reinitializing filters",
+                "failed to configure", "could not find command target",
+                "unable to parse option value", "error"):
         assert bad not in low, (bad, rendered.stderr[-1500:])
 
     dims = _run([
-        _tool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+        ffprobe, "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(out),
     ], tmp_path)
     assert dims.stdout.strip().split(",")[:2] == [str(OUT_W), str(OUT_H)]
     audio = _run([
-        _tool("ffprobe"), "-v", "error", "-select_streams", "a:0",
+        ffprobe, "-v", "error", "-select_streams", "a:0",
         "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", str(out),
     ], tmp_path)
     assert audio.stdout.strip(), "no audio stream"
-
-    # Crop window changes at each cut: compare rendered frames either side.
-    before_cut1 = _raw_frame_at(ffmpeg, out, 1.40, tmp_path)
-    after_cut1 = _raw_frame_at(ffmpeg, out, 1.60, tmp_path)
-    before_cut2 = _raw_frame_at(ffmpeg, out, 2.90, tmp_path)
-    after_cut2 = _raw_frame_at(ffmpeg, out, 3.10, tmp_path)
-    assert len(before_cut1) == OUT_W * OUT_H * 3
-    assert before_cut1 != after_cut1, "crop did not change at the 1.5 s cut"
-    assert before_cut2 != after_cut2, "crop did not change at the 3.0 s cut"
+    src_frames, src_duration = _probe_video(ffprobe, src, tmp_path)
+    out_frames, out_duration = _probe_video(ffprobe, out, tmp_path)
+    assert out_frames == src_frames, (out_frames, src_frames)
+    assert abs(out_duration - src_duration) <= 0.1, (out_duration, src_duration)

@@ -435,8 +435,7 @@ class RenderService:
             video, clip, ass_path, template, clip.layout, clip.operations,
             clip.start_time, sendcmd_filename,
             template_config=template.config if template else {},
-            zoom_sendcmd_path=f"zoom_{clip.id}.txt" if zoom_plan.active else "",
-            zoom_initial=zoom_plan.initial,
+            zoom_shots=zoom_plan.shots if zoom_plan.active else None,
         )
         print(f"DEBUG render_clip: vf={vf}", flush=True)
 
@@ -704,7 +703,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"DEBUG: _build_ass wrote {len(ass_lines)} lines to {ass_path}", flush=True)
         return str(ass_path)
 
-    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None, zoom_sendcmd_path: str = "", zoom_initial: tuple[int, int, int, int] | None = None) -> tuple:
+    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None, zoom_shots: list[dict] | None = None) -> tuple:
         """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
         if operations is None:
             operations = []
@@ -731,8 +730,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             clip_start_time=clip_start_time,
             sendcmd_path=sendcmd_path,
             template_config=template_config,
-            zoom_sendcmd_path=zoom_sendcmd_path,
-            zoom_initial=zoom_initial,
+            zoom_shots=zoom_shots,
         )
         return vf_str, sfx_files
 

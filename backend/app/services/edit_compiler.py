@@ -23,6 +23,55 @@ MAX_SFX_START_SECONDS = 3600.0
 _SENDCMD_RE = re.compile(r"^\s*[\d.]+\s+overlay\s+x\s+(-?[\d.]+)")
 
 
+def _zoom_concat_filters(zoom_shots: list[dict]) -> str:
+    """Build the per-shot zoom stage as fixed crops joined by ``concat``.
+
+    Each segment is trimmed first, then cropped to ONE fixed window for that
+    shot and scaled once to the output size. Every ``scale`` therefore sees a
+    fixed input size fixed at graph-build time; the only thing that changes at
+    a cut is which segment is flowing through. This keeps the output size,
+    frame count and audio sync independent of the number/size of zoom shots.
+
+    The fragment starts with the ``[vbase]`` input label (the panned
+    1080x1920 frame) and ends at ``[out_v]``; an empty list means no zoom.
+    """
+    shots: list[tuple[float, float | None, int, int, int, int]] = []
+    for shot in zoom_shots:
+        crop = shot.get("crop") if isinstance(shot, dict) else None
+        if not crop or len(crop) != 4:
+            continue
+        try:
+            w, h, x, y = (round(float(v)) for v in crop)
+            start = float(shot.get("start", 0.0))
+            raw_end = shot.get("end")
+            end = float(raw_end) if raw_end is not None else None
+        except (TypeError, ValueError):
+            continue
+        shots.append((start, end, w, h, x, y))
+    if not shots:
+        return ""
+
+    if len(shots) == 1:
+        _, _, w, h, x, y = shots[0]
+        return f"[vbase]crop={w}:{h}:{x}:{y},scale=1080:1920,setsar=1[out_v]"
+
+    n = len(shots)
+    parts = ["[vbase]split=" + str(n) + "".join(f"[zsrc{i}]" for i in range(n))]
+    for i, (start, end, w, h, x, y) in enumerate(shots):
+        trim = f"trim=start={start:.3f}"
+        if i < n - 1 and end is not None:
+            trim += f":end={end:.3f}"
+        # setsar=1 is required: scaling a variable-aspect crop otherwise gives
+        # each concat input a different sample aspect ratio and concat refuses
+        # to configure its output pad.
+        parts.append(
+            f"[zsrc{i}]{trim},setpts=PTS-STARTPTS,crop={w}:{h}:{x}:{y},"
+            f"scale=1080:1920,setsar=1[zseg{i}]"
+        )
+    parts.append("".join(f"[zseg{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out_v]")
+    return ";".join(parts)
+
+
 def first_sendcmd_overlay_x(sendcmd_path: str) -> str:
     """Return the overlay x of the first sendcmd command (e.g. ``-981.32``).
 
@@ -124,8 +173,7 @@ def compile_plan(
     clip_start_time: float = 0.0,
     sendcmd_path: str = "",
     template_config: dict | None = None,
-    zoom_sendcmd_path: str = "",
-    zoom_initial: tuple[int, int, int, int] | None = None,
+    zoom_shots: list[dict] | None = None,
 ) -> tuple:
     if template_config is None:
         template_config = {}
@@ -172,17 +220,16 @@ def compile_plan(
         # The overlay main is the full scaled source (3413x1920 for a 1920x1080
         # input), so crop back down to the 1080x1920 vertical frame here. The
         # old colour-source main produced the right size but a black first frame.
-        # Optional per-shot zoom: a second constant crop of the vertical frame
-        # with its own sendcmd, then scaled back to the exact output size. The
-        # overlay pan above is unchanged, so there is no double zoom.
-        zoom_stage = ""
-        if zoom_sendcmd_path and zoom_initial:
-            zw, zh, zx, zy = zoom_initial
-            zoom_stage = (
-                f",sendcmd=f='{zoom_sendcmd_path}',crop@zc={zw}:{zh}:{zx}:{zy},"
-                "scale=1080:1920"
-            )
-        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0{zoom_stage}[out_v]"
+        # Optional per-shot zoom: instead of changing a crop's w/h at runtime
+        # (which leaves the following scale configured for the first crop
+        # size), split at the shot boundaries and give every segment its own
+        # FIXED crop + scale before joining with concat. The overlay pan above
+        # is unchanged, so there is no double zoom and audio stays in sync.
+        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0"
+        zoom_stage = _zoom_concat_filters(zoom_shots or [])
+        # The base crop must explicitly emit [vbase]; an unlabelled chain end
+        # becomes a filtergraph output and would never feed the zoom stage.
+        base += f"[vbase];{zoom_stage}" if zoom_stage else "[out_v]"
     else:
         base = "[0:v]split=2[v1][v2];[v1]crop=iw:ih/2:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[v2]crop=iw:ih/2:0:ih/2,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vstack]"
     

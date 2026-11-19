@@ -557,11 +557,14 @@ def _write_center_sendcmd(sendcmd_path: str, start_time: float, duration: float,
 
 
 # --------------------------------------------------------------------------- Per-shot wide-shot zoom
-# The zoom is a SECOND, constant-per-shot crop of the already-vertical frame:
-#   [full-height 1080x1920] -> sendcmd(crop@zc w/h/x/y) -> scale(1080:1920)
-# Changing crop w/h at runtime is supported by FFmpeg and the downstream scale
-# keeps the output size constant, so audio sync and the overlay sendcmd are
-# untouched. No zoom exists elsewhere in the renderer, so there is no doubling.
+# The zoom is a SECOND, constant-per-shot crop of the already-vertical frame.
+# The plan's shots are consumed by edit_compiler._zoom_concat_filters(), which
+# trims each shot and applies one FIXED crop + scale per segment before concat.
+# No filter ever sees a changing input size, so every scale is configured once
+# at graph-build time; audio sync and the overlay pan sendcmd are untouched.
+# The zoom .txt written below is an audit record only - the renderer uses the
+# in-memory shot crop values, never a runtime crop resize. No zoom exists
+# elsewhere in the renderer, so there is no doubling.
 
 
 @dataclass(frozen=True)
