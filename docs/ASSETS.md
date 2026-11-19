@@ -66,3 +66,17 @@ templates use the family name `Anton`. Stored templates that still say
 `Impact` are not edited; the `impact` family key is mapped to the same bundled
 Anton file so they keep rendering with a lookalike instead of the proprietary
 font.
+
+## Bundled OpenCV data file
+
+| File | Origin | License |
+| --- | --- | --- |
+| `backend/assets/models/haarcascade_frontalface_default.xml` | OpenCV frontal-face cascade (created by Rainer Lienhart), distributed with OpenCV | "Intel License Agreement For Open Source Computer Vision Library", Copyright (C) 2000, Intel Corporation — permissive redistribution terms retained verbatim in the file's top-of-file comment header |
+
+The first 40 lines of the XML were inspected: they contain the Intel OpenCV
+license block with the three redistribution conditions (source notice,
+binary notice, no Intel endorsement) and the "as is" disclaimer. No other
+license is claimed for this file. It is retained in the repository because the
+license text is preserved in the file itself (`docs/CREDITS.md`). The paired
+`deploy.prototxt` has no license header and is unreferenced, so it is
+git-ignored (as is the `res10_300x300_ssd_iter_140000.caffemodel` it belongs to).

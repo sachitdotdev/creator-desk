@@ -23,6 +23,7 @@ installed package metadata on Nov 18, 2026 (see `docs/DEPENDENCY_LICENSES.md`).
 | FFmpeg | GPLv3 build (`--enable-gpl --enable-version3`, no `--enable-nonfree`; gyan.dev full build) | https://ffmpeg.org/ | all video/audio rendering |
 | "Moon Over Red Dunes" (open-lofi, btahir) | CC0 1.0 Universal | https://github.com/btahir/open-lofi | BGM (`backend/assets/music/lofi.mp3`) |
 | Anton font (The Anton Project Authors) | SIL Open Font License 1.1 | https://github.com/google/fonts/tree/main/ofl/anton | bundled condensed bold caption font (`backend/assets/fonts/Anton-Regular.ttf`, license text in `backend/assets/fonts/OFL.txt`) |
+| OpenCV frontal-face cascade (Rainer Lienhart / Intel Corporation) | "Intel License Agreement For Open Source Computer Vision Library" (permissive terms retained in the file header) | https://github.com/opencv/opencv | data file (`backend/assets/models/haarcascade_frontalface_default.xml`); license text kept verbatim in the XML comment header |
 | fastapi | MIT | https://github.com/fastapi/fastapi | backend API |
 | uvicorn | BSD-3-Clause | https://github.com/encode/uvicorn | ASGI server |
 | yt-dlp | Unlicense | https://github.com/yt-dlp/yt-dlp | media download |
