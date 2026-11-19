@@ -593,6 +593,7 @@ def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules, "ultralytics", types.SimpleNamespace(YOLO=boom)
     )
+    monkeypatch.setattr(face_tracker, "_source_dimensions", lambda path: (1920, 1080))
     flushed: list[str] = []
     monkeypatch.setattr(face_tracker, "flush_vram", flushed.append)
 
@@ -602,7 +603,10 @@ def test_face_tracker_flushes_vram_when_detection_raises(monkeypatch, tmp_path):
     )
     assert result is False
     assert flushed == ["face-tracker:yolo"]
-    assert sendcmd.read_text(encoding="utf-8").strip() == "0.000 overlay x -420.0;"
+    content = sendcmd.read_text(encoding="utf-8")
+    expected = (1080.0 / 2.0) - (1920.0 / 2.0) * (1920.0 / 1080.0)
+    assert f"overlay x {expected:.2f};" in content  # source-aware center crop
+    assert "-420.0" not in content  # never the hard-coded constant
 
 
 def test_concurrent_transcribes_serialize_around_model_load(monkeypatch, tmp_path):

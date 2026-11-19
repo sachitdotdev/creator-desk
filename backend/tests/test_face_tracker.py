@@ -496,6 +496,65 @@ def test_exception_invalidates_stale_sidecar(monkeypatch, tmp_path):
     _assert_fallback_sidecar(sendcmd, "detector exploded")
 
 
+def _expected_source_aware_overlay(width=1920.0, height=1080.0,
+                                   target_width=1080.0):
+    """Overlay x a center-crop fallback must emit for a given source size."""
+    return (target_width / 2.0) - (width / 2.0) * (1920.0 / height)
+
+
+def test_exception_yolo_construction_uses_source_aware_overlay(monkeypatch, tmp_path):
+    """YOLO construction raising must not emit the hard-coded -420.0 overlay."""
+    install_fakes(monkeypatch, 30, {}, fps=30.0)
+    monkeypatch.setattr(face_tracker, "detect_cuts", lambda *a, **k: [])
+    monkeypatch.setattr(face_tracker, "_source_dimensions", lambda path: (1920, 1080))
+
+    def boom(path):
+        raise RuntimeError("detector exploded")
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=boom))
+    sendcmd = tmp_path / "exc_construct.txt"
+    assert face_tracker.generate_sendcmd_file(
+        "src.webm", 0.0, 1.0, str(sendcmd)) is False
+    samples = parse_sendcmd(sendcmd)
+    assert samples
+    expected = _expected_source_aware_overlay()  # -1166.67 for 1920x1080
+    assert abs(samples[0][1] - expected) < 0.05, samples[0]
+    assert abs(samples[0][1] - (-420.0)) > 1.0, samples[0]
+
+
+def test_exception_yolo_inference_uses_source_aware_overlay_and_sidecar(monkeypatch, tmp_path):
+    """Inference raising midway must emit a source-aware overlay and fallback sidecar."""
+    install_fakes(monkeypatch, 30, {}, fps=30.0)
+    monkeypatch.setattr(face_tracker, "detect_cuts", lambda *a, **k: [])
+    monkeypatch.setattr(face_tracker, "_source_dimensions", lambda path: (1920, 1080))
+
+    class ExplodingModel:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, frame, verbose=False, device="cuda", **kwargs):
+            self.calls += 1
+            if self.calls >= 3:  # raise midway through the frame loop
+                raise RuntimeError("inference exploded")
+            return []
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics",
+        types.SimpleNamespace(YOLO=lambda path: ExplodingModel()))
+    sendcmd = tmp_path / "exc_infer.txt"
+    # Stale per-frame sidecar from an earlier successful render.
+    sendcmd.with_suffix(".track.json").write_text(
+        json.dumps([{"frame": 0, "detected": True}]), encoding="utf-8")
+    assert face_tracker.generate_sendcmd_file(
+        "src.webm", 0.0, 1.0, str(sendcmd)) is False
+    samples = parse_sendcmd(sendcmd)
+    assert samples
+    expected = _expected_source_aware_overlay()  # -1166.67 for 1920x1080
+    assert abs(samples[0][1] - expected) < 0.05, samples[0]
+    assert abs(samples[0][1] - (-420.0)) > 1.0, samples[0]
+    _assert_fallback_sidecar(sendcmd, "inference exploded")
+
+
 def test_detect_cuts_runs_without_holding_gpu_lock(monkeypatch, tmp_path):
     """A different thread must be able to take the GPU lock during the scan."""
     install_fakes(monkeypatch, 30, {}, fps=30.0)

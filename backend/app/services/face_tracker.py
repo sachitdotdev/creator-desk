@@ -460,11 +460,8 @@ def generate_sendcmd_file(video_path: str, start_time: float, duration: float, s
         print(f"DEBUG: Face tracking failed: {type(e).__name__}: {e}")
         traceback.print_exc()
         _write_fallback_sidecar(sendcmd_path, f"{type(e).__name__}: {e}")
-        try:
-            with open(sendcmd_path, "w") as f:
-                f.write("0.000 overlay x -420.0;\n")
-        except Exception:  # noqa: BLE001,S110 - best-effort fallback overlay
-            pass
+        _write_center_sendcmd(sendcmd_path, start_time, duration, target_width,
+                              video_path)
         return False
 
 
