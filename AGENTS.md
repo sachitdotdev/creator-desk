@@ -101,8 +101,6 @@ Render-stability notes:
 - `start.ps1`               — legacy PowerShell launcher (backend + frontend only).
 - `backend/quantize_meissa.py`, `backend/update_music.py` (stub),
   `backend/init_db_script.py`, `backend/seed_templates.py` — one-off tools, not app code.
-  `Start-OpenHands.bat`, `script.py` and `backend/fix_paths.py` are deliberately
-  untracked (personal/absolute developer paths); they stay local only.
 
 ### Files to skip when grepping / reading
 `.git`, `node_modules`, `backend/venv`, `__pycache__`, `dist`, `build`,
