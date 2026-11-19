@@ -191,6 +191,18 @@ Render-stability notes:
 Never commit `.env`, API keys, personal absolute paths, or copyrighted audio.
 BGM files are git-ignored; document license/source in a sidecar JSON.
 
+## Third-party code policy
+- Never copy or adapt code from AGPL, GPL, SSPL, CC BY-NC or unlicensed projects.
+- Code under MIT, BSD, Apache-2.0, Unlicense or CC0 may be copied only with a
+  header comment giving the source URL and license, plus an entry in
+  `docs/CREDITS.md`.
+- Ideas and techniques may be reimplemented from understanding (no verbatim
+  copying).
+- Unknown license means do not copy.
+- Do-not-copy list: Clips Kitty, SupoClip, vibeclip (all AGPL-3.0) and ClippedAI
+  (CC BY-NC 4.0).
+- Content rights: third-party test media stays local and untracked.
+
 ## 8. GPU rules
 - Every VRAM-touching stage holds `gpu_lock(stage)` from `core/gpu_lock.py` for
   the minimum span of GPU work, then calls `flush_vram(stage)` at the end.
