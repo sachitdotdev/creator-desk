@@ -87,3 +87,14 @@ logs/
 
 # Local launcher overrides (e.g. VLLM_MODEL); never commit personal paths.
 launcher.env.local.bat
+
+# Third-party model binaries with no documented permissive license (local only).
+# Unreferenced by the app; kept on disk but not published.
+backend/assets/models/*.onnx
+backend/assets/models/*.caffemodel
+
+# One-off host scripts that contain personal/absolute developer paths.
+# Kept locally for reference but never published.
+Start-OpenHands.bat
+backend/fix_paths.py
+script.py

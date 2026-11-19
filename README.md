@@ -159,6 +159,25 @@ The `OLLAMA_MODEL` value in `backend/app/core/config.py` is vestigial and no
 longer used by the vLLM pipeline. Keep the name consistent with what vLLM reports
 at `GET /v1/models`.
 
+## 🧩 Model files
+
+The face-tracking stage needs a YOLOv8 face-detection weights file in addition
+to the LLM model described above. This file is **not part of the repository**
+(it is gitignored because of its size), so a fresh clone will not include it.
+
+- **Default expected location:** `backend/yolov8n-face.pt` (repo-relative to
+  `backend/`, resolved in `backend/app/core/paths.py` as `FACE_MODEL`).
+- **Override:** set the `FACE_MODEL_PATH` environment variable to point at a
+  weights file elsewhere on your machine; that path is used instead of the
+  default.
+- **Source / provenance:** the weights are a YOLOv8n face-detection model used
+  with the `ultralytics` YOLO library. **Download link: TBD** — no source URL
+  or download instructions for this file are documented in the repository or
+  its git history, so none are given here.
+
+If the file is missing, the face tracker falls back to a plain center crop
+(tracking is disabled) rather than failing.
+
 ## 📂 Project Structure
 
 - **`backend/`**: FastAPI application (Python, uvicorn)

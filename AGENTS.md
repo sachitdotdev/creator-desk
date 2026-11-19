@@ -99,10 +99,8 @@ Render-stability notes:
   those PIDs. Bootstraps the backend venv when missing.
 - `stop.bat`                — stops the processes recorded in `.run\*.pid` and frees the ports.
 - `start.ps1`               — legacy PowerShell launcher (backend + frontend only).
-- `Start-OpenHands.bat`     — host launcher for the OpenHands Docker/WSL environment (not the app)
-- `script.py`, `backend/quantize_meissa.py`, `backend/update_music.py` (stub),
-  `backend/fix_paths.py` (one-off DB path migration), `backend/init_db_script.py`,
-  `backend/seed_templates.py` — one-off tools, not app code
+- `backend/quantize_meissa.py`, `backend/update_music.py` (stub),
+  `backend/init_db_script.py`, `backend/seed_templates.py` — one-off tools, not app code.
 
 ### Files to skip when grepping / reading
 `.git`, `node_modules`, `backend/venv`, `__pycache__`, `dist`, `build`,
@@ -190,6 +188,21 @@ Render-stability notes:
 ## 7. Public repo
 Never commit `.env`, API keys, personal absolute paths, or copyrighted audio.
 BGM files are git-ignored; document license/source in a sidecar JSON.
+
+## Third-party code policy
+- Never copy or adapt code from AGPL, GPL, SSPL, CC BY-NC or unlicensed projects.
+- Code under MIT, BSD, Apache-2.0, Unlicense or CC0 may be copied only with a
+  header comment giving the source URL, license and copyright holder, plus an
+  entry in `docs/CREDITS.md`. The original copyright notice and license text
+  must be kept verbatim — either inline in the file header or in
+  `docs/third_party_licenses/<project>.txt`. For Apache-2.0 code, the original
+  `NOTICE` file content must also be preserved.
+- Ideas and techniques may be reimplemented from understanding (no verbatim
+  copying).
+- Unknown license means do not copy.
+- Do-not-copy list: Clips Kitty, SupoClip, vibeclip (all AGPL-3.0) and ClippedAI
+  (CC BY-NC 4.0).
+- Content rights: third-party test media stays local and untracked.
 
 ## 8. GPU rules
 - Every VRAM-touching stage holds `gpu_lock(stage)` from `core/gpu_lock.py` for
