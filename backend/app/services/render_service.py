@@ -21,8 +21,21 @@ from app.core.config import (
     AUDIO_DUCK_RELEASE,
     AUDIO_DUCK_THRESHOLD,
     AUDIO_MUSIC_VOLUME,
+    CAPTION_ALIGNMENT,
+    CAPTION_BACK_COLOR,
+    CAPTION_BOLD,
+    CAPTION_FONT,
+    CAPTION_FONT_SIZE_PCT,
+    CAPTION_MARGIN_LR,
+    CAPTION_MAX_LINES,
+    CAPTION_OUTLINE_COLOR,
+    CAPTION_OUTLINE_W,
+    CAPTION_PRIMARY_COLOR,
     CAPTION_SAFE_BOTTOM_PCT,
     CAPTION_SAFE_ZONE_ENFORCE,
+    CAPTION_SHADOW,
+    CAPTION_WORD_WRAP,
+    CAPTION_WRAP_CHARS,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
     LOUDNESS_NORMALIZE,
@@ -78,6 +91,88 @@ def effective_caption_margin_v(template_config: dict | None, frame_height: int =
     if CAPTION_SAFE_ZONE_ENFORCE and margin < safe_px:
         return safe_px
     return margin
+
+
+def _ass_color(value: Any, default: str) -> str:
+    """Normalize a template colour to ASS ``&HAABBGGRR`` form."""
+    if value is None:
+        return default
+    text = str(value).strip().rstrip("&")
+    named = {
+        "white": "&H00FFFFFF", "black": "&H00000000",
+        "yellow": "&H0000FFFF", "red": "&H000000FF",
+    }
+    if text.lower() in named:
+        return named[text.lower()]
+    if text.startswith("&H") and len(text) >= 8:
+        return text[:10]
+    if text.startswith("#") and len(text) >= 7:
+        return _hex_to_ass(text, default).rstrip("&")
+    return default
+
+
+def resolve_caption_style(template_config: dict | None, frame_height: int = 1920) -> dict[str, Any]:
+    """Resolve the burned ASS style: config defaults + explicit template keys.
+
+    A template that does not set a key inherits the new (larger/bolder) config
+    default. A template that sets a key keeps its own value, so existing saved
+    templates and explicit user settings continue to work unchanged.
+    """
+    caption_cfg = template_config.get("caption", {}) if isinstance(template_config, dict) else {}
+    if not isinstance(caption_cfg, dict):
+        caption_cfg = {}
+
+    def value(key: str, default: Any, cast: Any = str) -> Any:
+        raw = caption_cfg.get(key)
+        if raw is None:
+            return default
+        try:
+            return cast(raw)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "font": str(value("font", CAPTION_FONT)),
+        "size": int(value("size", round(CAPTION_FONT_SIZE_PCT * float(frame_height)), int)),
+        # ASS uses -1 for bold, 0 for regular.
+        "bold": -1 if bool(value("bold", CAPTION_BOLD, int)) else 0,
+        "primary": _ass_color(caption_cfg.get("primary"), CAPTION_PRIMARY_COLOR),
+        "secondary": _ass_color(caption_cfg.get("primary"), CAPTION_PRIMARY_COLOR),
+        "outline": _ass_color(caption_cfg.get("outline"), CAPTION_OUTLINE_COLOR),
+        "back": _ass_color(caption_cfg.get("back"), CAPTION_BACK_COLOR),
+        "outline_w": int(value("outline_w", CAPTION_OUTLINE_W, int)),
+        "shadow": int(value("shadow", CAPTION_SHADOW, int)),
+        "alignment": int(value("alignment", CAPTION_ALIGNMENT, int)),
+        "margin_lr": CAPTION_MARGIN_LR,
+        "max_lines": int(value("max_lines", CAPTION_MAX_LINES, int)),
+    }
+
+
+def wrap_caption_text(text: str, max_chars: int = CAPTION_WRAP_CHARS,
+                      max_lines: int = CAPTION_MAX_LINES) -> str:
+    """Word-wrap a dialogue to at most ``max_lines`` ASS lines (``\\N``)."""
+    words = str(text).split()
+    if not words:
+        return ""
+    if not CAPTION_WORD_WRAP or max_lines < 1:
+        return " ".join(words)
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max(1, max_chars):
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = f"{lines[-1].rstrip()}…"
+    return "\\N".join(lines)
 
 
 def _effective_loudness_target_tp() -> float:
@@ -363,18 +458,21 @@ class RenderService:
         return str(output_path)
 
     def _default_config(self) -> dict[str, Any]:
+        # New templates inherit the centrally configured caption defaults.
+        default_caption = resolve_caption_style({})
         return {
             "caption": {
-                "font": "Arial",
-                "size": 48,
-                "bold": 1,
-                "primary": "white",
-                "outline": "&H00000000&",
-                "back": "&H4D000000&",
-                "alignment": 2,
+                "font": default_caption["font"],
+                "size": default_caption["size"],
+                "bold": 1 if default_caption["bold"] == -1 else 0,
+                "primary": default_caption["primary"],
+                "outline": default_caption["outline"],
+                "back": default_caption["back"],
+                "alignment": default_caption["alignment"],
                 "margin_v": 120,
-                "outline_w": 3,
-                "shadow": 0,
+                "outline_w": default_caption["outline_w"],
+                "shadow": default_caption["shadow"],
+                "max_lines": default_caption["max_lines"],
                 "highlight_color": "&H0068EE7B&",
                 "karaoke": False,
                 "kinetic": True,
@@ -434,19 +532,22 @@ class RenderService:
         ass_path = render_root / f"subs_{clip.id}_{uuid.uuid4().hex[:8]}.ass"
 
         # Caption safe-zone clamp is render-time only; stored templates stay as-is.
+        template_config = template.config if template is not None else {}
         style_margin_v = effective_caption_margin_v(
-            template.config if template is not None else {},
+            template_config,
             frame_height=1920,  # ASS PlayResY for the 1080x1920 vertical render
         )
+        style = resolve_caption_style(template_config, frame_height=1920)
 
         ass_header = f"""[Script Info]
 ScriptType: v4.00+
+WrapStyle: 2
 PlayResX: 1080
 PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,{style_margin_v:.1f},1
+Style: Default,{style['font']},{style['size']},{style['primary']},{style['secondary']},{style['outline']},{style['back']},{style['bold']},0,0,0,100,100,0,0,1,{style['outline_w']},{style['shadow']},{style['alignment']},{style['margin_lr']},{style['margin_lr']},{style_margin_v:.1f},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -475,7 +576,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             current_time = seg_start
 
             for chunk in chunks:
-                chunk_text = " ".join(chunk)
+                chunk_text = wrap_caption_text(" ".join(chunk), max_lines=style["max_lines"])
 
                 # Calculate exact proportional time for this chunk
                 chunk_duration = total_duration * (len(chunk) / total_words)

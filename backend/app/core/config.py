@@ -189,3 +189,23 @@ print(f"DEBUG CONFIG: TRANSCRIPTS_DIR={TRANSCRIPTS_DIR}")
 # that safe value (toggle with CAPTION_SAFE_ZONE_ENFORCE, default on).
 CAPTION_SAFE_BOTTOM_PCT = float(os.getenv("CAPTION_SAFE_BOTTOM_PCT", "0.18"))
 CAPTION_SAFE_ZONE_ENFORCE = os.getenv("CAPTION_SAFE_ZONE_ENFORCE", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# --------------------------------------------------------------------------- Default burned-in caption style
+# Only templates that do not override these keys use these values. Saved
+# templates with explicit caption settings keep their own styling. The font
+# size is a fraction of the 1920 px output height (6.5% -> 124.8 px), which is
+# legible over light backgrounds without swallowing the frame.
+CAPTION_FONT = os.getenv("CAPTION_FONT", "Arial")
+CAPTION_BOLD = os.getenv("CAPTION_BOLD", "true").strip().lower() in ("1", "true", "yes", "on")
+CAPTION_FONT_SIZE_PCT = float(os.getenv("CAPTION_FONT_SIZE_PCT", "0.065"))
+CAPTION_PRIMARY_COLOR = os.getenv("CAPTION_PRIMARY_COLOR", "&H00FFFFFF")       # white
+CAPTION_OUTLINE_COLOR = os.getenv("CAPTION_OUTLINE_COLOR", "&H00000000")       # black
+CAPTION_OUTLINE_W = int(os.getenv("CAPTION_OUTLINE_W", "5"))
+CAPTION_SHADOW = int(os.getenv("CAPTION_SHADOW", "3"))
+CAPTION_BACK_COLOR = os.getenv("CAPTION_BACK_COLOR", "&H00000000")
+CAPTION_ALIGNMENT = int(os.getenv("CAPTION_ALIGNMENT", "2"))                   # bottom centre
+CAPTION_MARGIN_LR = int(os.getenv("CAPTION_MARGIN_LR", "40"))
+CAPTION_MAX_LINES = int(os.getenv("CAPTION_MAX_LINES", "2"))
+CAPTION_WORD_WRAP = os.getenv("CAPTION_WORD_WRAP", "true").strip().lower() in ("1", "true", "yes", "on")
+CAPTION_WRAP_CHARS = int(os.getenv("CAPTION_WRAP_CHARS", "18"))                # chars per line at default size
+

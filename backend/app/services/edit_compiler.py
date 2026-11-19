@@ -4,12 +4,15 @@ import re
 import textwrap
 from pathlib import Path
 
-from app.core.config import AUDIO_SFX_VOLUME
-from app.core.paths import RENDERS_DIR, SFX_DIR
+from app.core.config import AUDIO_SFX_VOLUME, CAPTION_FONT
+from app.core.paths import RENDERS_DIR, SFX_DIR, resolve_font_file
 
 log = logging.getLogger(__name__)
 
-FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
+# Legacy constant kept for callers that only need to know a font is bundled.
+# Actual font selection goes through resolve_font_file() so no developer path
+# is ever baked into a render.
+FONT_PATH = "impact.ttf"
 _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 # A sane ceiling for an SFX's CLIP-RELATIVE delay: beyond this the LLM output
 # is junk (overflowing floats) and the event is skipped. Absolute source
@@ -129,14 +132,12 @@ def compile_plan(
     caption_cfg = template_config.get("caption", {})
     animation_type = template_config.get("text_animation", "spring_bounce")
     
-    font_name = caption_cfg.get("font", "Impact")
-    if "Montserrat" in font_name:
-        font_path = "C\\:/Windows/Fonts/arialbd.ttf"
-    elif "Arial" in font_name:
-        font_path = "C\\:/Windows/Fonts/arial.ttf"
-    else:
-        font_path = "C\\:/Windows/Fonts/impact.ttf"
-    
+    font_name = str(caption_cfg.get("font") or CAPTION_FONT)
+    # Bundled font first, then well-known system dirs; never a personal path.
+    # When no file is found FFmpeg's fontconfig family lookup is used instead.
+    font_file = resolve_font_file(font_name)
+    font_option = f"fontfile='{font_file}'" if font_file else f"font='{font_name}'"
+
     text_color = "yellow"
     if caption_cfg.get("primary") == "&H00FFFFFF&":
         text_color = "white"
@@ -195,7 +196,7 @@ def compile_plan(
                     fade_end = rel_start + 0.5
                     alpha_expr = f"if(lt(t,{fade_end}),(t-{rel_start})/0.5,1)"
                 
-                drawtext = f"drawtext=fontfile='{font_path}':text='{wrapped_text}':x=(w-text_w)/2:y='{y_expr}':fontsize={font_size}:fontcolor={text_color}:box=1:boxcolor=black@0.8:alpha='{alpha_expr}':enable='between(t,{rel_start},{rel_end})'"
+                drawtext = f"drawtext={font_option}:text='{wrapped_text}':x=(w-text_w)/2:y='{y_expr}':fontsize={font_size}:fontcolor={text_color}:box=1:boxcolor=black@0.8:alpha='{alpha_expr}':enable='between(t,{rel_start},{rel_end})'"
                 filters.append(f"{current_video}{drawtext}{out_label}")
                 current_video = out_label
             

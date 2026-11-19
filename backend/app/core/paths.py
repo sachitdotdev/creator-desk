@@ -24,6 +24,7 @@ BACKEND_DIR   = ROOT / "backend"
 ASSETS_DIR    = BACKEND_DIR / "assets"
 MUSIC_DIR     = ASSETS_DIR / "music"
 SFX_DIR       = ASSETS_DIR / "sfx"
+FONT_DIR      = ASSETS_DIR / "fonts"
 SOURCES_DIR   = DATA_DIR / "sources"
 PROCESSED_DIR = SOURCES_DIR / "processed"
 RENDERS_DIR   = DATA_DIR / "renders"
@@ -42,3 +43,47 @@ CUT_CACHE_DIR = TEMP_DIR / "cut_cache"      # cached ffmpeg cut times per source
 TRANSCRIPTS_DIR = DATA_DIR / "creators"
 TEMPLATES_DIR   = DATA_DIR / "templates"
 DB_PATH          = DATA_DIR / "creatordesk.db"
+
+# Font resolution for burned-in drawtext. Never hard-code a developer's font
+# path: prefer the bundled assets, then well-known system directories, then
+# let FFmpeg fall back to the fontconfig family name.
+_FONT_FILE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "impact": ("impact.ttf",),
+    "arial": ("arial.ttf", "arialbd.ttf", "LiberationSans-Regular.ttf", "DejaVuSans.ttf"),
+    "montserrat": ("Montserrat-Regular.ttf", "Montserrat-Bold.ttf", "DejaVuSans.ttf"),
+}
+
+
+def resolve_font_file(font_name: str) -> str | None:
+    """Return an FFmpeg-safe path to a font file, or None for fontconfig use.
+
+    Resolution order: bundled ``backend/assets/fonts`` files matching the
+    requested family (Impact/Arial/Montserrat), the bundled Impact font as a
+    universal fallback, then common system font directories. No absolute
+    developer path is ever returned.
+    """
+    key = (font_name or "").strip().lower()
+    names = _FONT_FILE_CANDIDATES.get(key, ()) + ("impact.ttf", "DejaVuSans.ttf")
+    for name in names:
+        candidate = FONT_DIR / name
+        if candidate.is_file():
+            return _ffmpeg_escape(candidate.as_posix())
+
+    system_roots = [
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts",
+        Path("/usr/share/fonts/truetype"),
+        Path("/Library/Fonts"),
+    ]
+    for root in system_roots:
+        for name in names:
+            candidate = root / name
+            if candidate.is_file():
+                return _ffmpeg_escape(candidate.as_posix())
+    return None
+
+
+def _ffmpeg_escape(path: str) -> str:
+    """Escape a path for use inside an FFmpeg filtergraph option value."""
+    return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+

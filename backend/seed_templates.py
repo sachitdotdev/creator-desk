@@ -20,7 +20,10 @@ def seed():
             config={
                 "vibe": "Podcast",
                 "colors": {"primary": "#FFFFFF", "accent": "#7B68EE", "background": "#000000", "highlight": "#7B68EE"},
-                "caption": {"font": "Arial", "size": 48, "bold": 1, "primary": "&H00FFFFFF&", "outline": "&H00000000&", "back": "&H4D000000&", "alignment": 2, "margin_v": 120, "outline_w": 3, "shadow": 0, "highlight_color": "&H0068EE7B&", "karaoke": False, "kinetic": True},
+                # Default caption style now inherits config.py values (see
+                # resolve_caption_style): Arial, ~125px (6.5% of 1920), bold,
+                # white with black outline and soft shadow, max 2 lines.
+                "caption": {"font": "Arial", "size": 125, "bold": 1, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H00000000", "alignment": 2, "margin_v": 120, "outline_w": 5, "shadow": 3, "max_lines": 2, "highlight_color": "&H0068EE7B&", "karaoke": False, "kinetic": True},
                 "title": {"font": "Arial", "size": 36, "bold": 1, "color": "&H00FFFFFF&", "position": "top", "margin_v": 70, "outline_w": 2, "glow": False, "text": "CREATOR DESK"},
                 "watermark": {"text": "", "font": "Arial", "size": 22, "color": "&H00FFFFFF&", "opacity": 0.3, "position": "bottom-right", "margin_x": 40, "margin_y": 40},
                 "background": {"mode": "blur", "blur_amount": 25, "color": "#000000"}
