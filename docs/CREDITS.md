@@ -1,5 +1,16 @@
 # Credits
 
+## Copying third-party code
+
+When code under MIT, BSD, Apache-2.0, Unlicense or CC0 is copied into this
+repository, the original copyright notice and license text must be kept verbatim
+— either inline in a file header comment or in
+`docs/third_party_licenses/<project>.txt`. For Apache-2.0 code, the original
+`NOTICE` file content must also be preserved. Every copied file also needs a
+header comment giving the source URL, license and copyright holder, plus a row
+in this file (see the tables below). Ideas and techniques may be reimplemented
+from understanding without copying, but unknown licenses mean do not copy.
+
 ## Used today
 
 Dependencies and media actually used by the pipeline. Licenses were read from

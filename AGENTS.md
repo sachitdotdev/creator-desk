@@ -194,8 +194,11 @@ BGM files are git-ignored; document license/source in a sidecar JSON.
 ## Third-party code policy
 - Never copy or adapt code from AGPL, GPL, SSPL, CC BY-NC or unlicensed projects.
 - Code under MIT, BSD, Apache-2.0, Unlicense or CC0 may be copied only with a
-  header comment giving the source URL and license, plus an entry in
-  `docs/CREDITS.md`.
+  header comment giving the source URL, license and copyright holder, plus an
+  entry in `docs/CREDITS.md`. The original copyright notice and license text
+  must be kept verbatim — either inline in the file header or in
+  `docs/third_party_licenses/<project>.txt`. For Apache-2.0 code, the original
+  `NOTICE` file content must also be preserved.
 - Ideas and techniques may be reimplemented from understanding (no verbatim
   copying).
 - Unknown license means do not copy.
