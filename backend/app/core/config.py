@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -189,3 +190,46 @@ print(f"DEBUG CONFIG: TRANSCRIPTS_DIR={TRANSCRIPTS_DIR}")
 # that safe value (toggle with CAPTION_SAFE_ZONE_ENFORCE, default on).
 CAPTION_SAFE_BOTTOM_PCT = float(os.getenv("CAPTION_SAFE_BOTTOM_PCT", "0.18"))
 CAPTION_SAFE_ZONE_ENFORCE = os.getenv("CAPTION_SAFE_ZONE_ENFORCE", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# --------------------------------------------------------------------------- Default burned-in caption style
+# Only templates that do not override these keys use these values. Saved
+# templates with explicit caption settings keep their own styling. The font
+# size is a fraction of the 1920 px output height (6.5% -> 124.8 px), which is
+# legible over light backgrounds without swallowing the frame.
+CAPTION_FONT = os.getenv("CAPTION_FONT", "Arial")
+# Font family names are interpolated into an FFmpeg filtergraph option. Only
+# plain family names may pass; anything else is rejected at the API boundary
+# and again in the render fallback (see edit_compiler.compile_plan).
+CAPTION_FONT_NAME_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+
+
+def is_valid_caption_font(value: object) -> bool:
+    """Whether ``value`` is a safe plain font-family name."""
+    return isinstance(value, str) and bool(CAPTION_FONT_NAME_RE.fullmatch(value))
+
+
+CAPTION_BOLD = os.getenv("CAPTION_BOLD", "true").strip().lower() in ("1", "true", "yes", "on")
+CAPTION_FONT_SIZE_PCT = float(os.getenv("CAPTION_FONT_SIZE_PCT", "0.065"))
+CAPTION_PRIMARY_COLOR = os.getenv("CAPTION_PRIMARY_COLOR", "&H00FFFFFF")       # white
+CAPTION_OUTLINE_COLOR = os.getenv("CAPTION_OUTLINE_COLOR", "&H00000000")       # black
+CAPTION_OUTLINE_W = int(os.getenv("CAPTION_OUTLINE_W", "5"))
+CAPTION_SHADOW = int(os.getenv("CAPTION_SHADOW", "3"))
+CAPTION_BACK_COLOR = os.getenv("CAPTION_BACK_COLOR", "&H00000000")
+CAPTION_ALIGNMENT = int(os.getenv("CAPTION_ALIGNMENT", "2"))                   # bottom centre
+CAPTION_MARGIN_LR = int(os.getenv("CAPTION_MARGIN_LR", "40"))
+CAPTION_MAX_LINES = int(os.getenv("CAPTION_MAX_LINES", "2"))
+CAPTION_WORD_WRAP = os.getenv("CAPTION_WORD_WRAP", "true").strip().lower() in ("1", "true", "yes", "on")
+CAPTION_WRAP_CHARS = int(os.getenv("CAPTION_WRAP_CHARS", "15"))                # chars per line at default size
+
+# --------------------------------------------------------------------------- Per-shot wide-shot face zoom
+# Constant within a shot, changes only at detected cuts. The base full-height
+# crop already upscales a 1920x1080 source by 1920/1080 = 1.778x, so a total
+# upscale ceiling of 3.0x allows at most ~1.69x extra zoom on 1080p sources
+# before the picture gets unduly soft.
+FACE_ZOOM_ENABLED = os.getenv("FACE_ZOOM_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+FACE_ZOOM_TARGET_PCT = float(os.getenv("FACE_ZOOM_TARGET_PCT", "0.18"))        # face height / output height
+FACE_ZOOM_MAX_ZOOM = float(os.getenv("FACE_ZOOM_MAX_ZOOM", "2.0"))             # relative to full-height crop
+FACE_ZOOM_MAX_UPSCALE = float(os.getenv("FACE_ZOOM_MAX_UPSCALE", "3.0"))       # source px -> output px
+FACE_ZOOM_HEADROOM_PCT = float(os.getenv("FACE_ZOOM_HEADROOM_PCT", "0.12"))    # space above face
+
+

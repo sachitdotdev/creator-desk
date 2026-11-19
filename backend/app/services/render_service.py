@@ -21,8 +21,21 @@ from app.core.config import (
     AUDIO_DUCK_RELEASE,
     AUDIO_DUCK_THRESHOLD,
     AUDIO_MUSIC_VOLUME,
+    CAPTION_ALIGNMENT,
+    CAPTION_BACK_COLOR,
+    CAPTION_BOLD,
+    CAPTION_FONT,
+    CAPTION_FONT_SIZE_PCT,
+    CAPTION_MARGIN_LR,
+    CAPTION_MAX_LINES,
+    CAPTION_OUTLINE_COLOR,
+    CAPTION_OUTLINE_W,
+    CAPTION_PRIMARY_COLOR,
     CAPTION_SAFE_BOTTOM_PCT,
     CAPTION_SAFE_ZONE_ENFORCE,
+    CAPTION_SHADOW,
+    CAPTION_WORD_WRAP,
+    CAPTION_WRAP_CHARS,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
     LOUDNESS_NORMALIZE,
@@ -45,7 +58,7 @@ from app.services.audio_loudness import (
     is_ffmpeg_available,
 )
 from app.services.edit_compiler import compile_plan
-from app.services.face_tracker import generate_sendcmd_file
+from app.services.face_tracker import generate_sendcmd_file, generate_zoom_sendcmd_file
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +91,166 @@ def effective_caption_margin_v(template_config: dict | None, frame_height: int =
     if CAPTION_SAFE_ZONE_ENFORCE and margin < safe_px:
         return safe_px
     return margin
+
+
+def _ass_color(value: Any, default: str) -> str:
+    """Normalize a template colour to ASS ``&HAABBGGRR`` form."""
+    if value is None:
+        return default
+    text = str(value).strip().rstrip("&")
+    named = {
+        "white": "&H00FFFFFF", "black": "&H00000000",
+        "yellow": "&H0000FFFF", "red": "&H000000FF",
+    }
+    if text.lower() in named:
+        return named[text.lower()]
+    if text.startswith("&H") and len(text) >= 8:
+        return text[:10]
+    if text.startswith("#") and len(text) >= 7:
+        return _hex_to_ass(text, default).rstrip("&")
+    return default
+
+
+def resolve_caption_style(template_config: dict | None, frame_height: int = 1920) -> dict[str, Any]:
+    """Resolve the burned ASS style: config defaults + explicit template keys.
+
+    A template that does not set a key inherits the new (larger/bolder) config
+    default. A template that sets a key keeps its own value, so existing saved
+    templates and explicit user settings continue to work unchanged.
+    """
+    caption_cfg = template_config.get("caption", {}) if isinstance(template_config, dict) else {}
+    if not isinstance(caption_cfg, dict):
+        caption_cfg = {}
+
+    def value(key: str, default: Any, cast: Any = str) -> Any:
+        raw = caption_cfg.get(key)
+        if raw is None:
+            return default
+        try:
+            return cast(raw)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "font": str(value("font", CAPTION_FONT)),
+        "size": int(value("size", round(CAPTION_FONT_SIZE_PCT * float(frame_height)), int)),
+        # ASS uses -1 for bold, 0 for regular.
+        "bold": -1 if bool(value("bold", CAPTION_BOLD, int)) else 0,
+        "primary": _ass_color(caption_cfg.get("primary"), CAPTION_PRIMARY_COLOR),
+        "secondary": _ass_color(caption_cfg.get("primary"), CAPTION_PRIMARY_COLOR),
+        "outline": _ass_color(caption_cfg.get("outline"), CAPTION_OUTLINE_COLOR),
+        "back": _ass_color(caption_cfg.get("back"), CAPTION_BACK_COLOR),
+        "outline_w": int(value("outline_w", CAPTION_OUTLINE_W, int)),
+        "shadow": int(value("shadow", CAPTION_SHADOW, int)),
+        "alignment": int(value("alignment", CAPTION_ALIGNMENT, int)),
+        "margin_lr": CAPTION_MARGIN_LR,
+        "max_lines": int(value("max_lines", CAPTION_MAX_LINES, int)),
+    }
+
+
+# Width estimation is deliberately conservative: at the real (bold) font size
+# a line may occupy at most 95% of the usable width. ``CAPTION_WRAP_CHARS``
+# stays as an upper bound on line length, but rendered width decides wrapping.
+CAPTION_WIDTH_SAFETY = 0.95
+_CAPTION_NARROW = set(".,:;!|'\"`()[]{}-… ")
+_CAPTION_WIDE = set("MW@%")
+
+
+def _char_width_em(ch: str) -> float:
+    """Rough per-glyph advance in em units (dependency-free, conservative)."""
+    if ch.isspace():
+        return 0.28
+    if ch in _CAPTION_NARROW:
+        return 0.30
+    if ch.isdigit():
+        return 0.56
+    if ch.isupper():
+        return 0.85 if ch in _CAPTION_WIDE else 0.72
+    return 0.54
+
+
+def estimate_caption_width(text: str, font_size: int, bold: bool = CAPTION_BOLD) -> float:
+    """Estimated rendered width of ``text`` in pixels at the given font size."""
+    factor = 1.08 if bold else 1.0
+    return sum(_char_width_em(ch) for ch in str(text)) * float(font_size) * factor
+
+
+def _caption_max_width_px() -> float:
+    return (1080 - 2 * CAPTION_MARGIN_LR) * CAPTION_WIDTH_SAFETY
+
+
+def wrap_caption_lines(
+    text: str,
+    max_chars: int = CAPTION_WRAP_CHARS,
+    *,
+    font_size: int | None = None,
+    bold: bool = CAPTION_BOLD,
+) -> list[str]:
+    """Split text into ASS lines that fit the frame width. Never drops words."""
+    words = str(text).split()
+    if not words:
+        return []
+    if not CAPTION_WORD_WRAP:
+        return [" ".join(words)]
+    if font_size is None:
+        font_size = round(CAPTION_FONT_SIZE_PCT * 1920)
+    max_width = _caption_max_width_px()
+    char_limit = max(1, int(max_chars))
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        fits = (len(candidate) <= char_limit
+                and estimate_caption_width(candidate, font_size, bold) <= max_width)
+        if current and not fits:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def wrap_caption_text(text: str, max_chars: int = CAPTION_WRAP_CHARS,
+                      max_lines: int = CAPTION_MAX_LINES,
+                      *, font_size: int | None = None,
+                      bold: bool = CAPTION_BOLD) -> str:
+    """Word-wrap a dialogue into ``\\N``-separated lines (no truncation).
+
+    ``max_lines`` is retained for callers/signature compatibility; the line
+    limit is enforced by splitting a chunk into extra timed dialogues in
+    ``_build_ass`` instead of discarding words here.
+    """
+    if max_lines < 1:
+        return " ".join(str(text).split())
+    return "\\N".join(wrap_caption_lines(text, max_chars, font_size=font_size, bold=bold))
+
+
+def split_caption_chunks(words: list[str], style: dict) -> list[list[str]]:
+    """Group a chunk's words so each group wraps within ``max_lines`` lines.
+
+    A single over-wide word is kept intact in its own group; it is never split
+    or dropped. Short chunks produce exactly one group (unchanged behaviour).
+    """
+    max_lines = max(1, int(style.get("max_lines", CAPTION_MAX_LINES)))
+    font_size = int(style.get("size", round(CAPTION_FONT_SIZE_PCT * 1920)))
+    bold = int(style.get("bold", 0)) != 0
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for word in words:
+        candidate = current + [word]
+        lines = wrap_caption_lines(" ".join(candidate), font_size=font_size, bold=bold)
+        if current and len(lines) > max_lines:
+            groups.append(current)
+            current = [word]
+        else:
+            current = candidate
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _effective_loudness_target_tp() -> float:
@@ -246,8 +419,23 @@ class RenderService:
         sendcmd_filename = f"crop_{clip.id}.txt"
         generate_sendcmd_file(video.path, clip.start_time, clip.end_time - clip.start_time, sendcmd_path)
 
+        # Per-shot wide-shot zoom (constant within each shot, cuts only). A
+        # tracker fallback produces no zoom sidecar, so this is a no-op then.
+        zoom_plan = generate_zoom_sendcmd_file(
+            crop_sendcmd_path=sendcmd_path,
+            video_path=video.path,
+            start_time=clip.start_time,
+            duration=clip.end_time - clip.start_time,
+            sendcmd_path=str(RENDERS_DIR / f"zoom_{clip.id}.txt"),
+            report_path=str(RENDERS_DIR / f"zoom_{clip.id}.json"),
+        )
+        print(f"DEBUG render_clip: zoom active={zoom_plan.active} shots={len(zoom_plan.shots)}", flush=True)
+
         vf, sfx_files = self._build_filter_graph(
-            video, clip, ass_path, template, clip.layout, clip.operations, clip.start_time, sendcmd_filename, template_config=template.config if template else {}
+            video, clip, ass_path, template, clip.layout, clip.operations,
+            clip.start_time, sendcmd_filename,
+            template_config=template.config if template else {},
+            zoom_shots=zoom_plan.shots if zoom_plan.active else None,
         )
         print(f"DEBUG render_clip: vf={vf}", flush=True)
 
@@ -363,18 +551,21 @@ class RenderService:
         return str(output_path)
 
     def _default_config(self) -> dict[str, Any]:
+        # New templates inherit the centrally configured caption defaults.
+        default_caption = resolve_caption_style({})
         return {
             "caption": {
-                "font": "Arial",
-                "size": 48,
-                "bold": 1,
-                "primary": "white",
-                "outline": "&H00000000&",
-                "back": "&H4D000000&",
-                "alignment": 2,
+                "font": default_caption["font"],
+                "size": default_caption["size"],
+                "bold": 1 if default_caption["bold"] == -1 else 0,
+                "primary": default_caption["primary"],
+                "outline": default_caption["outline"],
+                "back": default_caption["back"],
+                "alignment": default_caption["alignment"],
                 "margin_v": 120,
-                "outline_w": 3,
-                "shadow": 0,
+                "outline_w": default_caption["outline_w"],
+                "shadow": default_caption["shadow"],
+                "max_lines": default_caption["max_lines"],
                 "highlight_color": "&H0068EE7B&",
                 "karaoke": False,
                 "kinetic": True,
@@ -434,19 +625,22 @@ class RenderService:
         ass_path = render_root / f"subs_{clip.id}_{uuid.uuid4().hex[:8]}.ass"
 
         # Caption safe-zone clamp is render-time only; stored templates stay as-is.
+        template_config = template.config if template is not None else {}
         style_margin_v = effective_caption_margin_v(
-            template.config if template is not None else {},
+            template_config,
             frame_height=1920,  # ASS PlayResY for the 1080x1920 vertical render
         )
+        style = resolve_caption_style(template_config, frame_height=1920)
 
         ass_header = f"""[Script Info]
 ScriptType: v4.00+
+WrapStyle: 2
 PlayResX: 1080
 PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,{style_margin_v:.1f},1
+Style: Default,{style['font']},{style['size']},{style['primary']},{style['secondary']},{style['outline']},{style['back']},{style['bold']},0,0,0,100,100,0,0,1,{style['outline_w']},{style['shadow']},{style['alignment']},{style['margin_lr']},{style['margin_lr']},{style_margin_v:.1f},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -475,17 +669,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             current_time = seg_start
 
             for chunk in chunks:
-                chunk_text = " ".join(chunk)
-
                 # Calculate exact proportional time for this chunk
                 chunk_duration = total_duration * (len(chunk) / total_words)
 
                 # Force the chunk to end exactly at the segment end
                 chunk_end = min(seg_end, current_time + chunk_duration)
 
-                start_str = self._format_time(current_time)
-                end_str = self._format_time(chunk_end)
-                ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{chunk_text}")
+                # A chunk that wraps past max_lines becomes several timed
+                # dialogues. Timing stays word-proportional, non-overlapping,
+                # and the last sub-dialogue ends exactly at chunk_end, so the
+                # original time span is unchanged and no word is lost.
+                groups = split_caption_chunks(chunk, style)
+                t = current_time
+                for idx, group in enumerate(groups):
+                    group_end = (
+                        chunk_end if idx == len(groups) - 1
+                        else min(chunk_end, t + chunk_duration * len(group) / len(chunk))
+                    )
+                    group_text = wrap_caption_text(
+                        " ".join(group), font_size=style["size"], bold=style["bold"] != 0,
+                    )
+                    start_str = self._format_time(t)
+                    end_str = self._format_time(group_end)
+                    ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{group_text}")
+                    t = group_end
                 current_time = chunk_end
 
         ass_content = ass_header + "\n".join(ass_lines)
@@ -496,7 +703,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"DEBUG: _build_ass wrote {len(ass_lines)} lines to {ass_path}", flush=True)
         return str(ass_path)
 
-    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None) -> tuple:
+    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None, zoom_shots: list[dict] | None = None) -> tuple:
         """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
         if operations is None:
             operations = []
@@ -522,7 +729,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ass_filename=ass_filename,
             clip_start_time=clip_start_time,
             sendcmd_path=sendcmd_path,
-            template_config=template_config
+            template_config=template_config,
+            zoom_shots=zoom_shots,
         )
         return vf_str, sfx_files
 

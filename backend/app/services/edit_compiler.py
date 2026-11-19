@@ -4,12 +4,15 @@ import re
 import textwrap
 from pathlib import Path
 
-from app.core.config import AUDIO_SFX_VOLUME
-from app.core.paths import RENDERS_DIR, SFX_DIR
+from app.core.config import AUDIO_SFX_VOLUME, CAPTION_FONT, is_valid_caption_font
+from app.core.paths import RENDERS_DIR, SFX_DIR, resolve_font_file
 
 log = logging.getLogger(__name__)
 
-FONT_PATH = "C\\:/Windows/Fonts/impact.ttf"
+# Legacy constant kept for callers that only need to know a font is bundled.
+# Actual font selection goes through resolve_font_file() so no developer path
+# is ever baked into a render.
+FONT_PATH = "impact.ttf"
 _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 # A sane ceiling for an SFX's CLIP-RELATIVE delay: beyond this the LLM output
 # is junk (overflowing floats) and the event is skipped. Absolute source
@@ -18,6 +21,55 @@ _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 MAX_SFX_START_SECONDS = 3600.0
 
 _SENDCMD_RE = re.compile(r"^\s*[\d.]+\s+overlay\s+x\s+(-?[\d.]+)")
+
+
+def _zoom_concat_filters(zoom_shots: list[dict]) -> str:
+    """Build the per-shot zoom stage as fixed crops joined by ``concat``.
+
+    Each segment is trimmed first, then cropped to ONE fixed window for that
+    shot and scaled once to the output size. Every ``scale`` therefore sees a
+    fixed input size fixed at graph-build time; the only thing that changes at
+    a cut is which segment is flowing through. This keeps the output size,
+    frame count and audio sync independent of the number/size of zoom shots.
+
+    The fragment starts with the ``[vbase]`` input label (the panned
+    1080x1920 frame) and ends at ``[out_v]``; an empty list means no zoom.
+    """
+    shots: list[tuple[float, float | None, int, int, int, int]] = []
+    for shot in zoom_shots:
+        crop = shot.get("crop") if isinstance(shot, dict) else None
+        if not crop or len(crop) != 4:
+            continue
+        try:
+            w, h, x, y = (round(float(v)) for v in crop)
+            start = float(shot.get("start", 0.0))
+            raw_end = shot.get("end")
+            end = float(raw_end) if raw_end is not None else None
+        except (TypeError, ValueError):
+            continue
+        shots.append((start, end, w, h, x, y))
+    if not shots:
+        return ""
+
+    if len(shots) == 1:
+        _, _, w, h, x, y = shots[0]
+        return f"[vbase]crop={w}:{h}:{x}:{y},scale=1080:1920,setsar=1[out_v]"
+
+    n = len(shots)
+    parts = ["[vbase]split=" + str(n) + "".join(f"[zsrc{i}]" for i in range(n))]
+    for i, (start, end, w, h, x, y) in enumerate(shots):
+        trim = f"trim=start={start:.3f}"
+        if i < n - 1 and end is not None:
+            trim += f":end={end:.3f}"
+        # setsar=1 is required: scaling a variable-aspect crop otherwise gives
+        # each concat input a different sample aspect ratio and concat refuses
+        # to configure its output pad.
+        parts.append(
+            f"[zsrc{i}]{trim},setpts=PTS-STARTPTS,crop={w}:{h}:{x}:{y},"
+            f"scale=1080:1920,setsar=1[zseg{i}]"
+        )
+    parts.append("".join(f"[zseg{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out_v]")
+    return ";".join(parts)
 
 
 def first_sendcmd_overlay_x(sendcmd_path: str) -> str:
@@ -121,6 +173,7 @@ def compile_plan(
     clip_start_time: float = 0.0,
     sendcmd_path: str = "",
     template_config: dict | None = None,
+    zoom_shots: list[dict] | None = None,
 ) -> tuple:
     if template_config is None:
         template_config = {}
@@ -129,14 +182,22 @@ def compile_plan(
     caption_cfg = template_config.get("caption", {})
     animation_type = template_config.get("text_animation", "spring_bounce")
     
-    font_name = caption_cfg.get("font", "Impact")
-    if "Montserrat" in font_name:
-        font_path = "C\\:/Windows/Fonts/arialbd.ttf"
-    elif "Arial" in font_name:
-        font_path = "C\\:/Windows/Fonts/arial.ttf"
-    else:
-        font_path = "C\\:/Windows/Fonts/impact.ttf"
-    
+    # Defence in depth: the API validates template fonts on save, but stored
+    # data can predate that check. Never interpolate an untrusted family name
+    # into the filtergraph - fall back to the configured default instead.
+    requested_font = caption_cfg.get("font")
+    font_name = str(requested_font) if requested_font else CAPTION_FONT
+    if not is_valid_caption_font(font_name):
+        log.warning(
+            "[CAPTION] invalid font name %r; falling back to %r",
+            font_name, CAPTION_FONT,
+        )
+        font_name = CAPTION_FONT
+    # Bundled font first, then well-known system dirs; never a personal path.
+    # When no file is found FFmpeg's fontconfig family lookup is used instead.
+    font_file = resolve_font_file(font_name)
+    font_option = f"fontfile={font_file}" if font_file else f"font='{font_name}'"
+
     text_color = "yellow"
     if caption_cfg.get("primary") == "&H00FFFFFF&":
         text_color = "white"
@@ -159,7 +220,16 @@ def compile_plan(
         # The overlay main is the full scaled source (3413x1920 for a 1920x1080
         # input), so crop back down to the 1080x1920 vertical frame here. The
         # old colour-source main produced the right size but a black first frame.
-        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0[out_v]"
+        # Optional per-shot zoom: instead of changing a crop's w/h at runtime
+        # (which leaves the following scale configured for the first crop
+        # size), split at the shot boundaries and give every segment its own
+        # FIXED crop + scale before joining with concat. The overlay pan above
+        # is unchanged, so there is no double zoom and audio stays in sync.
+        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0"
+        zoom_stage = _zoom_concat_filters(zoom_shots or [])
+        # The base crop must explicitly emit [vbase]; an unlabelled chain end
+        # becomes a filtergraph output and would never feed the zoom stage.
+        base += f"[vbase];{zoom_stage}" if zoom_stage else "[out_v]"
     else:
         base = "[0:v]split=2[v1][v2];[v1]crop=iw:ih/2:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[v2]crop=iw:ih/2:0:ih/2,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vstack]"
     
@@ -195,7 +265,7 @@ def compile_plan(
                     fade_end = rel_start + 0.5
                     alpha_expr = f"if(lt(t,{fade_end}),(t-{rel_start})/0.5,1)"
                 
-                drawtext = f"drawtext=fontfile='{font_path}':text='{wrapped_text}':x=(w-text_w)/2:y='{y_expr}':fontsize={font_size}:fontcolor={text_color}:box=1:boxcolor=black@0.8:alpha='{alpha_expr}':enable='between(t,{rel_start},{rel_end})'"
+                drawtext = f"drawtext={font_option}:text='{wrapped_text}':x=(w-text_w)/2:y='{y_expr}':fontsize={font_size}:fontcolor={text_color}:box=1:boxcolor=black@0.8:alpha='{alpha_expr}':enable='between(t,{rel_start},{rel_end})'"
                 filters.append(f"{current_video}{drawtext}{out_label}")
                 current_video = out_label
             

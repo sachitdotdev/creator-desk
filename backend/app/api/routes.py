@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models
-from app.core.config import CLIP_MAX_SECONDS, CLIP_MIN_SECONDS
+from app.core.config import CLIP_MAX_SECONDS, CLIP_MIN_SECONDS, is_valid_caption_font
 from app.database import SessionLocal, get_db
 from app.services import music_service
 from app.services.llm_service import LLMService
@@ -278,13 +278,30 @@ def get_templates(db: Session = Depends(get_db)):
     return db.query(models.Template).all()
 
 
+def _validate_template_caption_font(config: dict | None) -> None:
+    """Reject unsafe caption.font values before they reach a render graph."""
+    caption = config.get("caption") if isinstance(config, dict) else None
+    if not isinstance(caption, dict) or "font" not in caption:
+        return
+    font = caption["font"]
+    if font is None or is_valid_caption_font(font):
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=("caption.font must be a plain font family name "
+                "(letters, digits, space, dot, underscore, hyphen; max 64 chars)"),
+    )
+
+
 @router.post("/templates")
 def create_template(data: dict, db: Session = Depends(get_db)):
+    config = data.get("config", {})
+    _validate_template_caption_font(config)
     new_template = models.Template(
         name=data.get("name", "Untitled Template"),
         description=data.get("description", ""),
         layout=data.get("layout", "center_crop"),
-        config=data.get("config", {}),
+        config=config,
         is_default=data.get("is_default", False)
     )
     db.add(new_template)
@@ -301,7 +318,9 @@ def update_template(template_id: int, data: dict, db: Session = Depends(get_db))
     if "name" in data: template.name = data["name"]
     if "description" in data: template.description = data["description"]
     if "layout" in data: template.layout = data["layout"]
-    if "config" in data: template.config = data["config"]
+    if "config" in data:
+        _validate_template_caption_font(data["config"])
+        template.config = data["config"]
     if "is_default" in data: template.is_default = data["is_default"]
     db.commit()
     db.refresh(template)

@@ -27,6 +27,9 @@ data/
 # Render review artifacts (contact sheets, metrics, debug overlays)
 data/reviews/
 
+# Pre-migration SQLite backups (one-off, never committed)
+data/backups/
+
 # Debugging junk
 _edit.py
 fix_llm.py
