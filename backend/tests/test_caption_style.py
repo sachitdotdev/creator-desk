@@ -22,6 +22,7 @@ from app.services.render_service import (
     resolve_caption_style,
     wrap_caption_text,
 )
+from seed_templates import CAPTION_STYLE_KEYS
 
 
 def _dialogues(ass: str) -> list[tuple[str, str, str]]:
@@ -164,6 +165,37 @@ def test_long_words_split_into_dialogues_without_losing_time(tmp_path):
     assert spans[0][0] == pytest.approx(0.0)
     assert spans[-1][1] == pytest.approx(3.0)
     assert all(a[1] <= b[0] + 0.01 for a, b in itertools.pairwise(spans))  # no overlap
+
+
+def test_seeded_templates_have_no_caption_style_keys(monkeypatch):
+    import seed_templates
+
+    added: list = []
+
+    class FakeDB:
+        def query(self, *args):
+            return types.SimpleNamespace(count=lambda: 0)
+
+        def add(self, template):
+            added.append(template)
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    fake_base = types.SimpleNamespace(
+        metadata=types.SimpleNamespace(create_all=lambda **kwargs: None)
+    )
+    monkeypatch.setattr(seed_templates, "Base", fake_base)
+    monkeypatch.setattr(seed_templates, "SessionLocal", FakeDB)
+    seed_templates.seed()
+    assert len(added) == 2
+    for template in added:
+        caption = template.config["caption"]
+        assert not (set(caption) & CAPTION_STYLE_KEYS), caption
+        assert "margin_v" in caption
 
 
 @pytest.mark.parametrize("clip_name,start,end", [
