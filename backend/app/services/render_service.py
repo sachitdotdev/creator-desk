@@ -21,6 +21,8 @@ from app.core.config import (
     AUDIO_DUCK_RELEASE,
     AUDIO_DUCK_THRESHOLD,
     AUDIO_MUSIC_VOLUME,
+    CAPTION_SAFE_BOTTOM_PCT,
+    CAPTION_SAFE_ZONE_ENFORCE,
     FFMPEG_PATH,
     FFMPEG_TIMEOUT_SECONDS,
     LOUDNESS_NORMALIZE,
@@ -56,6 +58,26 @@ def _coerce_music_volume(value: Any, default: float = AUDIO_MUSIC_VOLUME) -> flo
     if not math.isfinite(volume):
         return default
     return min(max(volume, 0.0), 1.0)
+
+
+def effective_caption_margin_v(template_config: dict | None, frame_height: int = 1920) -> float:
+    """ASS bottom margin (px) for a render, with the safe-zone clamp applied.
+
+    Stored templates are never modified: when the template's caption margin is
+    below ``CAPTION_SAFE_BOTTOM_PCT`` of the frame height it is raised for this
+    render only, and only while ``CAPTION_SAFE_ZONE_ENFORCE`` is enabled.
+    """
+    caption_cfg = template_config.get("caption", {}) if isinstance(template_config, dict) else {}
+    try:
+        margin = float(caption_cfg.get("margin_v", 120) or 120)
+    except (TypeError, ValueError):
+        margin = 120.0
+    if not math.isfinite(margin) or margin < 0:
+        margin = 120.0
+    safe_px = CAPTION_SAFE_BOTTOM_PCT * float(frame_height)
+    if CAPTION_SAFE_ZONE_ENFORCE and margin < safe_px:
+        return safe_px
+    return margin
 
 
 def _effective_loudness_target_tp() -> float:
@@ -259,7 +281,14 @@ class RenderService:
         print(f"DEBUG render_clip: running ffmpeg, cwd={ffmpeg_cwd}", flush=True)
         print(f"DEBUG render_clip: ffmpeg command (space-separated): {' '.join(str(x) for x in cmd)}", flush=True)
         try:
-            subprocess.run([str(x) for x in cmd], check=True, timeout=120, cwd=ffmpeg_cwd)
+            # Full vertical encodes at preset slow can exceed the 120 s default;
+            # use the configured render timeout instead of a short one.
+            subprocess.run(
+                [str(x) for x in cmd],
+                check=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
+                cwd=ffmpeg_cwd,
+            )
         except subprocess.CalledProcessError as exc:
             print(f"DEBUG render_clip: ffmpeg failed: {exc}", flush=True)
             print(f"DEBUG render_clip: stderr={exc.stderr}", flush=True)
@@ -404,14 +433,20 @@ class RenderService:
 
         ass_path = render_root / f"subs_{clip.id}_{uuid.uuid4().hex[:8]}.ass"
 
-        ass_header = """[Script Info]
+        # Caption safe-zone clamp is render-time only; stored templates stay as-is.
+        style_margin_v = effective_caption_margin_v(
+            template.config if template is not None else {},
+            frame_height=1920,  # ASS PlayResY for the 1080x1920 vertical render
+        )
+
+        ass_header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,60,1
+Style: Default,Arial,45,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,{style_margin_v:.1f},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

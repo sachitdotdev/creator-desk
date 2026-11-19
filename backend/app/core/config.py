@@ -32,6 +32,7 @@ if not os.environ.get("FFMPEG_PATH") and not shutil.which("ffmpeg"):
 
 # Import paths from core.paths
 from app.core.paths import (
+    CUT_CACHE_DIR,
     DATA_DIR,
     DB_PATH,
     FACE_MODEL,  # noqa: F401 - re-exported for app.services.face_tracker
@@ -143,7 +144,48 @@ API_VERSION = "1.0.0"
 
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
+# --------------------------------------------------------------------------- Face tracking (Phase 6 prep)
+# All face-tracker behavior below is gated by config so it can be tuned or
+# disabled without changing the sendcmd file format that render_service consumes.
+# FACE_MODEL is re-exported from core.paths: repo-relative by default, with an
+# optional FACE_MODEL_PATH environment override (never a hardcoded local path).
+FACE_TRACKER_ENABLED = os.getenv("FACE_TRACKER_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+FACE_MODEL_CONF = float(os.getenv("FACE_DETECTION_CONF", "0.25"))       # YOLO confidence threshold
+FACE_MODEL_IMGSZ = int(os.getenv("FACE_DETECTION_IMGSZ", "640"))        # YOLO inference size
+FACE_MODEL_UPSCALE_SMALL = os.getenv("FACE_DETECTION_UPSCALE_SMALL", "false").strip().lower() in ("1", "true", "yes", "on")
+# Detection stride: 1 = every frame (most reliable, slower), N = every N frames
+# with gaps filled by interpolation. Larger strides increase lost-tracking risk.
+FACE_DETECTION_STRIDE = int(os.getenv("FACE_DETECTION_STRIDE", "1"))
+
+# Shot-cut detection. Multi-camera podcasts cut hard between wide/single shots;
+# the tracker must reset its target at every cut so it never carries one shot's
+# x position into the next. Cuts are detected with ffmpeg scene detection and
+# cached so re-renders don't re-scan the source.
+FACE_CUT_THRESHOLD = float(os.getenv("FACE_CUT_THRESHOLD", "0.3"))      # ffmpeg scene detection threshold
+FACE_CUT_CACHE_DIR = CUT_CACHE_DIR                                      # cached cut times per source/clip
+
+# Target selection: with several faces and no speaker info yet, prefer the
+# largest face and require it to persist MIN_DWELL seconds before switching
+# (hysteresis against wrong-target flipping). Phase 6 will replace this with
+# diarization-based speaker mapping; the hook is select_target() in face_tracker.
+FACE_TARGET_MIN_DWELL_S = float(os.getenv("FACE_TARGET_MIN_DWELL_S", "1.5"))
+FACE_TARGET_PREFER_LARGEST = os.getenv("FACE_TARGET_PREFER_LARGEST", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# Smoothing + loss handling. A critically damped spring follows the target with
+# a max pan speed; when detection is lost the last position is held for
+# HOLD_SECONDS then eased toward the shot's face center (or shot center).
+FACE_SMOOTHING_OMEGA = float(os.getenv("FACE_SMOOTHING_OMEGA", "6.0"))   # critically damped spring (rad/s)
+FACE_MAX_PAN_PX_PER_S = float(os.getenv("FACE_MAX_PAN_PX_PER_S", "500.0"))
+FACE_HOLD_SECONDS = float(os.getenv("FACE_HOLD_SECONDS", "1.0"))
+
 # Debug prints to verify paths
 print(f"DEBUG CONFIG: DATA_DIR={DATA_DIR}")
 print(f"DEBUG CONFIG: SOURCES_DIR={SOURCES_DIR}")
 print(f"DEBUG CONFIG: TRANSCRIPTS_DIR={TRANSCRIPTS_DIR}")
+
+# Caption safe zone (bottom margin clamp). The caption bottom margin (ASS
+# MarginV) is expressed as a fraction of the frame height; when a template's
+# margin is below CAPTION_SAFE_BOTTOM_PCT the render-time clamp raises it to
+# that safe value (toggle with CAPTION_SAFE_ZONE_ENFORCE, default on).
+CAPTION_SAFE_BOTTOM_PCT = float(os.getenv("CAPTION_SAFE_BOTTOM_PCT", "0.18"))
+CAPTION_SAFE_ZONE_ENFORCE = os.getenv("CAPTION_SAFE_ZONE_ENFORCE", "true").strip().lower() in ("1", "true", "yes", "on")

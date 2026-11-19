@@ -6,6 +6,7 @@ from app.services import edit_compiler
 from app.services.edit_compiler import (
     MAX_SFX_START_SECONDS,
     compile_plan,
+    first_sendcmd_overlay_x,
     truncate_hook_text,
 )
 
@@ -52,6 +53,27 @@ def test_truncate_hook_handles_empty_and_whitespace():
 
 def test_truncate_hook_respects_custom_max_words():
     assert truncate_hook_text("one two three four", max_words=2) == "one two"
+
+
+def test_first_sendcmd_overlay_x_resolves_bare_name_in_renders_dir(monkeypatch, tmp_path):
+    # render_service passes a bare "crop_N.txt" (FFmpeg's cwd is the ASS folder),
+    # so the seed must resolve it against RENDERS_DIR rather than Python's cwd.
+    monkeypatch.setattr(edit_compiler, "RENDERS_DIR", tmp_path)
+    (tmp_path / "crop_2.txt").write_text(
+        "0.000 overlay x -981.32;\n0.033 overlay x -980.00;\n", encoding="utf-8"
+    )
+    assert first_sendcmd_overlay_x("crop_2.txt") == "-981.32"
+    vf, _ = compile_plan(
+        operations=[],
+        layout="center_crop",
+        ass_filename="subs.ass",
+        clip_start_time=0.0,
+        sendcmd_path="crop_2.txt",
+    )
+    assert "overlay=x=-981.32:y=0" in vf
+    # The video-as-overlay-main graph must crop the full scaled frame back to
+    # the vertical output size before the captions are burned in.
+    assert "[vstack]crop=1080:1920:0:0[out_v];[out_v]ass=" in vf
 
 
 def test_compile_plan_truncates_llm_hook_text_before_filter_build():
