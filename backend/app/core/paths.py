@@ -67,7 +67,7 @@ def resolve_font_file(font_name: str) -> str | None:
     for name in names:
         candidate = FONT_DIR / name
         if candidate.is_file():
-            return _ffmpeg_escape(candidate.as_posix())
+            return escape_fontfile_option(candidate.as_posix())
 
     system_roots = [
         Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts",
@@ -79,11 +79,33 @@ def resolve_font_file(font_name: str) -> str | None:
         for name in names:
             candidate = root / name
             if candidate.is_file():
-                return _ffmpeg_escape(candidate.as_posix())
+                return escape_fontfile_option(candidate.as_posix())
     return None
 
 
-def _ffmpeg_escape(path: str) -> str:
-    """Escape a path for use inside an FFmpeg filtergraph option value."""
-    return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+def escape_fontfile_option(path: str) -> str:
+    """Escape a font path for an unquoted drawtext ``fontfile`` option.
+
+    The value is embedded directly in a filtergraph, so it must survive two
+    FFmpeg parsing layers: the filtergraph tokenizer and the AVOption parser.
+    Characters special at both layers (``'``) need three backslashes; a
+    character special only at the option layer (the Windows drive ``:``)
+    needs two. Using the unquoted form avoids FFmpeg's single-quote rules,
+    which cannot represent an apostrophe inside a quoted region.
+    """
+    escaped: list[str] = []
+    for ch in str(path).replace("\\", "/"):
+        if ch == "'":
+            escaped.append("\\\\\\'")
+        elif ch == ":":
+            escaped.append("\\\\:")
+        elif ch in ";,[]":
+            escaped.append("\\\\\\" + ch)
+        else:
+            escaped.append(ch)
+    return "".join(escaped)
+
+
+# Backwards-compatible name for callers that used the old private helper.
+_ffmpeg_escape = escape_fontfile_option
 

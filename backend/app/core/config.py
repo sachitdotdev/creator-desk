@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -196,6 +197,17 @@ CAPTION_SAFE_ZONE_ENFORCE = os.getenv("CAPTION_SAFE_ZONE_ENFORCE", "true").strip
 # size is a fraction of the 1920 px output height (6.5% -> 124.8 px), which is
 # legible over light backgrounds without swallowing the frame.
 CAPTION_FONT = os.getenv("CAPTION_FONT", "Arial")
+# Font family names are interpolated into an FFmpeg filtergraph option. Only
+# plain family names may pass; anything else is rejected at the API boundary
+# and again in the render fallback (see edit_compiler.compile_plan).
+CAPTION_FONT_NAME_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+
+
+def is_valid_caption_font(value: object) -> bool:
+    """Whether ``value`` is a safe plain font-family name."""
+    return isinstance(value, str) and bool(CAPTION_FONT_NAME_RE.fullmatch(value))
+
+
 CAPTION_BOLD = os.getenv("CAPTION_BOLD", "true").strip().lower() in ("1", "true", "yes", "on")
 CAPTION_FONT_SIZE_PCT = float(os.getenv("CAPTION_FONT_SIZE_PCT", "0.065"))
 CAPTION_PRIMARY_COLOR = os.getenv("CAPTION_PRIMARY_COLOR", "&H00FFFFFF")       # white

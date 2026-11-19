@@ -1,7 +1,13 @@
 """Phase 3.3 - Short hooks: unit tests for hook/caption text post-processing."""
 
 import logging
+import shutil
+import subprocess
 
+import pytest
+
+from app.core.config import FFMPEG_PATH
+from app.core.paths import FONT_DIR, escape_fontfile_option
 from app.services import edit_compiler
 from app.services.edit_compiler import (
     MAX_SFX_START_SECONDS,
@@ -9,6 +15,13 @@ from app.services.edit_compiler import (
     first_sendcmd_overlay_x,
     truncate_hook_text,
 )
+
+
+def _ffmpeg() -> str | None:
+    return shutil.which("ffmpeg") or (str(FFMPEG_PATH) if FFMPEG_PATH else None)
+
+
+HAVE_FFMPEG = _ffmpeg() is not None
 
 
 def _sfx_plan(operations, monkeypatch, tmp_path, clip_start_time):
@@ -139,3 +152,55 @@ def test_sfx_relative_delay_above_ceiling_is_skipped(monkeypatch, tmp_path, capl
 
     assert sfx_files == []
     assert "skipped" in caplog.text
+
+
+# --------------------------------------------------------------------------- caption font safety
+
+def test_escape_fontfile_option_ordinary_path():
+    assert escape_fontfile_option("/opt/fonts/impact.ttf") == "/opt/fonts/impact.ttf"
+
+
+def test_escape_fontfile_option_windows_drive_letter():
+    assert escape_fontfile_option("C:/Windows/Fonts/arial.ttf") == "C\\\\:/Windows/Fonts/arial.ttf"
+
+
+def test_escape_fontfile_option_with_spaces():
+    assert (escape_fontfile_option("C:/Program Files/Fonts/arial.ttf")
+            == "C\\\\:/Program Files/Fonts/arial.ttf")
+
+
+def test_escape_fontfile_option_with_apostrophe():
+    assert (escape_fontfile_option("C:/Temp/O'Neil/impact.ttf")
+            == "C\\\\:/Temp/O\\\\\\'Neil/impact.ttf")
+
+
+def test_invalid_caption_font_falls_back_with_warning(monkeypatch, caplog):
+    monkeypatch.setattr(edit_compiler, "resolve_font_file", lambda name: None)
+    hostile = "Arial'; import evil; font='"
+    with caplog.at_level(logging.WARNING, logger="app.services.edit_compiler"):
+        vf, _ = compile_plan(
+            [{"type": "text", "start": 0.0, "end": 1.0, "text": "HI"}],
+            "center_crop", "subs.ass",
+            template_config={"caption": {"font": hostile}},
+        )
+    assert "invalid font name" in caplog.text
+    assert "font='Arial'" in vf
+    assert "import evil" not in vf
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg is required")
+def test_drawtext_fontfile_survives_apostrophe_in_directory(tmp_path):
+    font_dir = tmp_path / "O'Neil"
+    font_dir.mkdir()
+    shutil.copy(FONT_DIR / "impact.ttf", font_dir / "impact.ttf")
+    font = font_dir / "impact.ttf"
+
+    vf = (f"drawtext=fontfile={escape_fontfile_option(font.as_posix())}"
+          ":text=HELLO:fontsize=48:fontcolor=white:box=1:boxcolor=black")
+    result = subprocess.run(
+        [_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1",
+         "-vf", vf, "-frames:v", "1", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert result.returncode == 0, result.stderr

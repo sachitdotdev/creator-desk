@@ -4,7 +4,7 @@ import re
 import textwrap
 from pathlib import Path
 
-from app.core.config import AUDIO_SFX_VOLUME, CAPTION_FONT
+from app.core.config import AUDIO_SFX_VOLUME, CAPTION_FONT, is_valid_caption_font
 from app.core.paths import RENDERS_DIR, SFX_DIR, resolve_font_file
 
 log = logging.getLogger(__name__)
@@ -134,11 +134,21 @@ def compile_plan(
     caption_cfg = template_config.get("caption", {})
     animation_type = template_config.get("text_animation", "spring_bounce")
     
-    font_name = str(caption_cfg.get("font") or CAPTION_FONT)
+    # Defence in depth: the API validates template fonts on save, but stored
+    # data can predate that check. Never interpolate an untrusted family name
+    # into the filtergraph - fall back to the configured default instead.
+    requested_font = caption_cfg.get("font")
+    font_name = str(requested_font) if requested_font else CAPTION_FONT
+    if not is_valid_caption_font(font_name):
+        log.warning(
+            "[CAPTION] invalid font name %r; falling back to %r",
+            font_name, CAPTION_FONT,
+        )
+        font_name = CAPTION_FONT
     # Bundled font first, then well-known system dirs; never a personal path.
     # When no file is found FFmpeg's fontconfig family lookup is used instead.
     font_file = resolve_font_file(font_name)
-    font_option = f"fontfile='{font_file}'" if font_file else f"font='{font_name}'"
+    font_option = f"fontfile={font_file}" if font_file else f"font='{font_name}'"
 
     text_color = "yellow"
     if caption_cfg.get("primary") == "&H00FFFFFF&":

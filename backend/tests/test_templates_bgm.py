@@ -77,3 +77,40 @@ def test_template_update_can_add_bgm_fields(client):
     assert response.status_code == 200
     assert response.json()["config"]["bgm_track"] == "beat.wav"
     assert response.json()["config"]["bgm_volume"] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("font", [
+    "Arial'; import evil; font='",
+    "A" * 65,
+    "Arial.ttf/../../etc/passwd",
+    "Arial\nfontfile=/etc/passwd",
+])
+def test_create_template_rejects_unsafe_caption_font(client, font):
+    response = client.post(
+        "/api/templates",
+        json={"name": "Bad font", "config": {"caption": {"font": font}}},
+    )
+    assert response.status_code == 422
+
+
+def test_update_template_rejects_unsafe_caption_font(client):
+    created = client.post(
+        "/api/templates",
+        json={"name": "Font update", "config": {"caption": {"font": "Arial"}}},
+    ).json()
+    response = client.put(
+        f"/api/templates/{created['id']}",
+        json={"config": {"caption": {"font": "Bad'; import evil; font='"}}},
+    )
+    assert response.status_code == 422
+    stored = next(t for t in client.get("/api/templates").json() if t["id"] == created["id"])
+    assert stored["config"]["caption"]["font"] == "Arial"
+
+
+def test_valid_caption_font_still_saved(client):
+    response = client.post(
+        "/api/templates",
+        json={"name": "Good font", "config": {"caption": {"font": "Arial Black"}}},
+    )
+    assert response.status_code == 200
+    assert response.json()["config"]["caption"]["font"] == "Arial Black"
