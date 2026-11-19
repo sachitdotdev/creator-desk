@@ -124,6 +124,8 @@ def compile_plan(
     clip_start_time: float = 0.0,
     sendcmd_path: str = "",
     template_config: dict | None = None,
+    zoom_sendcmd_path: str = "",
+    zoom_initial: tuple[int, int, int, int] | None = None,
 ) -> tuple:
     if template_config is None:
         template_config = {}
@@ -160,7 +162,17 @@ def compile_plan(
         # The overlay main is the full scaled source (3413x1920 for a 1920x1080
         # input), so crop back down to the 1080x1920 vertical frame here. The
         # old colour-source main produced the right size but a black first frame.
-        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0[out_v]"
+        # Optional per-shot zoom: a second constant crop of the vertical frame
+        # with its own sendcmd, then scaled back to the exact output size. The
+        # overlay pan above is unchanged, so there is no double zoom.
+        zoom_stage = ""
+        if zoom_sendcmd_path and zoom_initial:
+            zw, zh, zx, zy = zoom_initial
+            zoom_stage = (
+                f",sendcmd=f='{zoom_sendcmd_path}',crop@zc={zw}:{zh}:{zx}:{zy},"
+                "scale=1080:1920"
+            )
+        base = f"[0:v]split=2[a][b];[a]scale=-1:1920[main];[b]scale=-1:1920[ov];[main][ov]overlay=x={initial_overlay_x}:y=0:shortest=1[ovl];[ovl]sendcmd=f='{sendcmd_path}'[vstack];[vstack]crop=1080:1920:0:0{zoom_stage}[out_v]"
     else:
         base = "[0:v]split=2[v1][v2];[v1]crop=iw:ih/2:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];[v2]crop=iw:ih/2:0:ih/2,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vstack]"
     

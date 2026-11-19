@@ -34,10 +34,14 @@ the hook is :func:`_select_target` (largest face + dwell hysteresis).
 """
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import os
+import statistics
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 
 from app.core.config import (
     FACE_CUT_CACHE_DIR,
@@ -53,6 +57,11 @@ from app.core.config import (
     FACE_TARGET_MIN_DWELL_S,
     FACE_TARGET_PREFER_LARGEST,
     FACE_TRACKER_ENABLED,
+    FACE_ZOOM_ENABLED,
+    FACE_ZOOM_HEADROOM_PCT,
+    FACE_ZOOM_MAX_UPSCALE,
+    FACE_ZOOM_MAX_ZOOM,
+    FACE_ZOOM_TARGET_PCT,
 )
 from app.core.gpu_lock import gpu_lock
 from app.core.processing_utils import flush_vram
@@ -545,3 +554,203 @@ def _write_center_sendcmd(sendcmd_path: str, start_time: float, duration: float,
             f.write("\n".join(lines))
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------- Per-shot wide-shot zoom
+# The zoom is a SECOND, constant-per-shot crop of the already-vertical frame:
+#   [full-height 1080x1920] -> sendcmd(crop@zc w/h/x/y) -> scale(1080:1920)
+# Changing crop w/h at runtime is supported by FFmpeg and the downstream scale
+# keeps the output size constant, so audio sync and the overlay sendcmd are
+# untouched. No zoom exists elsewhere in the renderer, so there is no doubling.
+
+
+@dataclass(frozen=True)
+class ZoomWindow:
+    zoom: float
+    crop_w: int
+    crop_h: int
+    crop_x: int
+    crop_y: int
+    capped_by: str | None
+    effective_upscale: float
+
+
+@dataclass(frozen=True)
+class ZoomPlan:
+    active: bool
+    initial: tuple[int, int, int, int] | None
+    shots: list[dict]
+
+
+def compute_zoom_window(
+    face_height_px: float,
+    face_center_x_px: float,
+    face_center_y_px: float,
+    source_width: int,
+    source_height: int,
+    *,
+    output_width: int = 1080,
+    output_height: int = 1920,
+    target_pct: float = FACE_ZOOM_TARGET_PCT,
+    headroom_pct: float = FACE_ZOOM_HEADROOM_PCT,
+    max_zoom: float = FACE_ZOOM_MAX_ZOOM,
+    max_upscale: float = FACE_ZOOM_MAX_UPSCALE,
+) -> ZoomWindow:
+    """Pure zoom-window math for one shot.
+
+    ``face_height_px`` and the center are SOURCE pixels. The base full-height
+    crop maps the whole source height to ``output_height``, so a face already
+    at/above ``target_pct`` of the output yields zoom 1.0 (close-ups unchanged).
+    """
+    base_scale = output_height / float(source_height)
+    face_frac = max(0.0, float(face_height_px)) / float(source_height)
+    if not math.isfinite(face_frac) or face_frac <= 0.0 or target_pct <= 0.0:
+        required = 1.0
+    else:
+        required = target_pct / face_frac
+
+    zoom_cap = max(1.0, float(max_zoom))
+    upscale_cap = max(1.0, float(max_upscale) / base_scale)
+    cap = min(zoom_cap, upscale_cap)
+    zoom = 1.0 if required <= 1.0 else min(required, cap)
+    # Only label a cap when it actually bound the required zoom.
+    capped_by: str | None = None
+    if required > cap:
+        capped_by = "max_zoom" if zoom_cap <= upscale_cap else "max_upscale"
+    if zoom <= 1.0:
+        capped_by = None
+
+    # Even-sized window preserves the 9:16 ratio exactly after scaling.
+    crop_w = max(2, int(round((output_width / zoom) / 2.0) * 2))
+    crop_h = max(2, int(round((crop_w * output_height / output_width) / 2.0) * 2))
+    crop_w = min(crop_w, output_width - (output_width % 2))
+    crop_h = min(crop_h, output_height - (output_height % 2))
+
+    cx = float(face_center_x_px) * base_scale
+    cy = float(face_center_y_px) * base_scale
+    # Keep headroom above the face in the FINAL frame, then centre on its face.
+    face_h_final = float(face_height_px) * base_scale * zoom
+    desired_center_y = headroom_pct * output_height + face_h_final / 2.0
+    crop_x = cx - output_width / (2.0 * zoom)
+    crop_y = cy - desired_center_y / zoom
+    crop_x = max(0.0, min(float(output_width - crop_w), crop_x))
+    crop_y = max(0.0, min(float(output_height - crop_h), crop_y))
+
+    return ZoomWindow(
+        zoom=round(zoom, 4),
+        crop_w=crop_w, crop_h=crop_h,
+        crop_x=round(crop_x), crop_y=round(crop_y),
+        capped_by=capped_by,
+        effective_upscale=round(base_scale * zoom, 4),
+    )
+
+
+def plan_shot_zooms(
+    records: list[dict],
+    cuts: list[float],
+    duration: float,
+    source_width: int,
+    source_height: int,
+    **kwargs,
+) -> list[ZoomWindow]:
+    """One constant zoom window per shot, from the tracker's face bboxes."""
+    boundaries = [0.0] + [float(c) for c in cuts if 0.0 < float(c) < duration] + [float(duration)]
+    windows: list[ZoomWindow] = []
+    for start, end in itertools.pairwise(boundaries):
+        faces = [
+            r for r in records
+            if r.get("sampled", True) and r.get("detected") and r.get("bbox")
+            and start <= float(r.get("time", 0.0)) < end
+        ]
+        if not faces:
+            windows.append(compute_zoom_window(
+                0.0, source_width / 2.0, source_height / 2.0,
+                source_width, source_height, **kwargs,
+            ))
+            continue
+        heights = [float(r["bbox"][3]) - float(r["bbox"][1]) for r in faces]
+        cxs = [(float(r["bbox"][0]) + float(r["bbox"][2])) / 2.0 for r in faces]
+        cys = [(float(r["bbox"][1]) + float(r["bbox"][3])) / 2.0 for r in faces]
+        windows.append(compute_zoom_window(
+            statistics.median(heights), statistics.median(cxs), statistics.median(cys),
+            source_width, source_height, **kwargs,
+        ))
+    return windows
+
+
+def generate_zoom_sendcmd_file(
+    crop_sendcmd_path: str,
+    video_path: str,
+    start_time: float,
+    duration: float,
+    sendcmd_path: str,
+    report_path: str | None = None,
+) -> ZoomPlan:
+    """Build the per-shot zoom sendcmd from the tracker sidecar.
+
+    A fallback sidecar (``{"fallback": true}``), a missing sidecar or a source
+    that cannot be probed all mean NO zoom: the overlay sendcmd and all other
+    render behaviour stay exactly as before.
+    """
+    if not FACE_ZOOM_ENABLED:
+        return ZoomPlan(active=False, initial=None, shots=[])
+
+    track_path = os.path.splitext(crop_sendcmd_path)[0] + ".track.json"
+    try:
+        records = json.loads(Path(track_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ZoomPlan(active=False, initial=None, shots=[])
+    if not isinstance(records, list) or not records:
+        return ZoomPlan(active=False, initial=None, shots=[])
+
+    dims = _source_dimensions(video_path)
+    if dims is None:
+        return ZoomPlan(active=False, initial=None, shots=[])
+    source_width, source_height = dims
+    cuts = detect_cuts(video_path, start_time, duration, FACE_CUT_THRESHOLD)
+    windows = plan_shot_zooms(records, cuts, duration, source_width, source_height)
+    if not any(w.zoom > 1.0 for w in windows):
+        return ZoomPlan(active=False, initial=None, shots=[])
+
+    boundaries = [0.0] + [float(c) for c in cuts if 0.0 < float(c) < duration] + [float(duration)]
+    lines: list[str] = []
+    shots: list[dict] = []
+    for start, end, window in zip(boundaries, boundaries[1:], windows):
+        # Frame 0 cannot reliably receive a sendcmd command, so compile_plan
+        # seeds the crop with the first window; the t=0 command is still emitted
+        # for completeness.
+        # sendcmd requires a timestamp on EVERY line; multiple commands on one
+        # line are not accepted (the first target is reused as a start time).
+        lines.extend([
+            f"{start:.3f} zc w {window.crop_w};",
+            f"{start:.3f} zc h {window.crop_h};",
+            f"{start:.3f} zc x {window.crop_x};",
+            f"{start:.3f} zc y {window.crop_y};",
+        ])
+        shots.append({
+            "start": round(start, 3), "end": round(end, 3),
+            "zoom": window.zoom, "capped_by": window.capped_by,
+            "effective_upscale": window.effective_upscale,
+            "crop": [window.crop_w, window.crop_h, window.crop_x, window.crop_y],
+        })
+    try:
+        Path(sendcmd_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if report_path:
+            Path(report_path).write_text(
+                json.dumps({
+                    "source": [source_width, source_height],
+                    "base_upscale": round(1920.0 / float(source_height), 4),
+                    "shots": shots,
+                }, indent=2),
+                encoding="utf-8",
+            )
+    except OSError as exc:
+        print(f"DEBUG: could not write zoom plan files: {exc}")
+        return ZoomPlan(active=False, initial=None, shots=[])
+
+    first = windows[0]
+    return ZoomPlan(
+        active=True,
+        initial=(first.crop_w, first.crop_h, first.crop_x, first.crop_y),
+        shots=shots,
+    )

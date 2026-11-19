@@ -58,7 +58,7 @@ from app.services.audio_loudness import (
     is_ffmpeg_available,
 )
 from app.services.edit_compiler import compile_plan
-from app.services.face_tracker import generate_sendcmd_file
+from app.services.face_tracker import generate_sendcmd_file, generate_zoom_sendcmd_file
 
 log = logging.getLogger(__name__)
 
@@ -341,8 +341,24 @@ class RenderService:
         sendcmd_filename = f"crop_{clip.id}.txt"
         generate_sendcmd_file(video.path, clip.start_time, clip.end_time - clip.start_time, sendcmd_path)
 
+        # Per-shot wide-shot zoom (constant within each shot, cuts only). A
+        # tracker fallback produces no zoom sidecar, so this is a no-op then.
+        zoom_plan = generate_zoom_sendcmd_file(
+            crop_sendcmd_path=sendcmd_path,
+            video_path=video.path,
+            start_time=clip.start_time,
+            duration=clip.end_time - clip.start_time,
+            sendcmd_path=str(RENDERS_DIR / f"zoom_{clip.id}.txt"),
+            report_path=str(RENDERS_DIR / f"zoom_{clip.id}.json"),
+        )
+        print(f"DEBUG render_clip: zoom active={zoom_plan.active} shots={len(zoom_plan.shots)}", flush=True)
+
         vf, sfx_files = self._build_filter_graph(
-            video, clip, ass_path, template, clip.layout, clip.operations, clip.start_time, sendcmd_filename, template_config=template.config if template else {}
+            video, clip, ass_path, template, clip.layout, clip.operations,
+            clip.start_time, sendcmd_filename,
+            template_config=template.config if template else {},
+            zoom_sendcmd_path=f"zoom_{clip.id}.txt" if zoom_plan.active else "",
+            zoom_initial=zoom_plan.initial,
         )
         print(f"DEBUG render_clip: vf={vf}", flush=True)
 
@@ -597,7 +613,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"DEBUG: _build_ass wrote {len(ass_lines)} lines to {ass_path}", flush=True)
         return str(ass_path)
 
-    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None) -> tuple:
+    def _build_filter_graph(self, video: Video, clip: Clip, ass_path: str | None, template: Template | None = None, layout: str = "split_screen", operations: list | None = None, start_time: float = 0.0, sendcmd_path: str = "", template_config: dict | None = None, zoom_sendcmd_path: str = "", zoom_initial: tuple[int, int, int, int] | None = None) -> tuple:
         """Build a complex filtergraph: compile the LLM-provided edit plan via edit_compiler."""
         if operations is None:
             operations = []
@@ -623,7 +639,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ass_filename=ass_filename,
             clip_start_time=clip_start_time,
             sendcmd_path=sendcmd_path,
-            template_config=template_config
+            template_config=template_config,
+            zoom_sendcmd_path=zoom_sendcmd_path,
+            zoom_initial=zoom_initial,
         )
         return vf_str, sfx_files
 

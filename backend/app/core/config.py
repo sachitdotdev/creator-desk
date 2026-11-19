@@ -209,3 +209,15 @@ CAPTION_MAX_LINES = int(os.getenv("CAPTION_MAX_LINES", "2"))
 CAPTION_WORD_WRAP = os.getenv("CAPTION_WORD_WRAP", "true").strip().lower() in ("1", "true", "yes", "on")
 CAPTION_WRAP_CHARS = int(os.getenv("CAPTION_WRAP_CHARS", "18"))                # chars per line at default size
 
+# --------------------------------------------------------------------------- Per-shot wide-shot face zoom
+# Constant within a shot, changes only at detected cuts. The base full-height
+# crop already upscales a 1920x1080 source by 1920/1080 = 1.778x, so a total
+# upscale ceiling of 3.0x allows at most ~1.69x extra zoom on 1080p sources
+# before the picture gets unduly soft.
+FACE_ZOOM_ENABLED = os.getenv("FACE_ZOOM_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+FACE_ZOOM_TARGET_PCT = float(os.getenv("FACE_ZOOM_TARGET_PCT", "0.18"))        # face height / output height
+FACE_ZOOM_MAX_ZOOM = float(os.getenv("FACE_ZOOM_MAX_ZOOM", "2.0"))             # relative to full-height crop
+FACE_ZOOM_MAX_UPSCALE = float(os.getenv("FACE_ZOOM_MAX_UPSCALE", "3.0"))       # source px -> output px
+FACE_ZOOM_HEADROOM_PCT = float(os.getenv("FACE_ZOOM_HEADROOM_PCT", "0.12"))    # space above face
+
+
