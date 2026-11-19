@@ -13,7 +13,7 @@ import pytest
 
 from app.core.config import FFMPEG_PATH
 from app.services import edit_compiler, face_tracker
-from app.services.edit_compiler import compile_plan
+from app.services.edit_compiler import compile_plan, first_sendcmd_overlay_x
 from app.services.face_tracker import (
     compute_zoom_window,
     generate_zoom_sendcmd_file,
@@ -391,6 +391,42 @@ SHOT_COLORS = ("red", "lime", "blue")
 SHOT_TIMES = (0.75, 2.25, 3.75)
 
 
+def _marker_centroid(frame: bytes, color: str) -> tuple[float, float] | None:
+    """Locate a marker block in an rgb24 frame; sample every other pixel."""
+    xs: list[int] = []
+    ys: list[int] = []
+    for y in range(0, OUT_H, 2):
+        row = y * OUT_W * 3
+        for x in range(0, OUT_W, 2):
+            i = row + x * 3
+            r, g, b = frame[i], frame[i + 1], frame[i + 2]
+            hit = (
+                (color == "red" and r > 150 and g < 100 and b < 100)
+                or (color == "lime" and g > 150 and r < 100 and b < 100)
+                or (color == "blue" and b > 150 and r < 100 and g < 100)
+            )
+            if hit:
+                xs.append(x); ys.append(y)
+    if not xs:
+        return None
+    return sum(xs) / len(xs), sum(ys) / len(ys)
+
+
+def _expected_marker_position(shot: dict, pan: float) -> tuple[float, float]:
+    """Where the marker must land after the base pan and this shot's crop."""
+    w, h, x, y = shot["crop"]
+    base_scale = OUT_H / float(SRC_H)
+    vx = MARKER_CX * base_scale + pan
+    vy = MARKER_CY * base_scale
+    return (vx - x) * OUT_W / float(w), (vy - y) * OUT_H / float(h)
+
+
+def _marker_in_frame(centroid: tuple[float, float] | None,
+                     expected: tuple[float, float], tol: float = 8.0) -> bool:
+    return bool(centroid) and abs(centroid[0] - expected[0]) <= tol \
+        and abs(centroid[1] - expected[1]) <= tol
+
+
 def _make_marker_multishot(ffmpeg: str, cwd: Path) -> Path:
     """3 x 1.5 s 1920x1080 shots (wide/close-up/wide) with distinct markers."""
     shots: list[Path] = []
@@ -432,11 +468,13 @@ def _render_zoom(ffmpeg: str, vf: str, cwd: Path, out: Path, duration: float):
 
 
 @pytest.mark.skipif(not HAVE_TOOLS, reason="ffmpeg/ffprobe are required")
-def test_zoom_render_fixed_crops_temporal(monkeypatch, tmp_path):
+def test_zoom_render_fixed_crops_geometric_and_temporal(monkeypatch, tmp_path):
     """Real render of wide / close-up / wide shots with DIFFERENT crop sizes.
 
-    Checks 1080x1920 output, frame count + duration against the source and a
-    clean FFmpeg log.
+    Checks 1080x1920 output, frame count + duration against the source, a clean
+    FFmpeg log and the spatial position of a known marker in every shot. A
+    negative control re-renders with the crop updates disabled and verifies the
+    geometric check actually fails in that case.
     """
     ffmpeg, ffprobe = _tool("ffmpeg"), _tool("ffprobe")
     src = _make_marker_multishot(ffmpeg, tmp_path)
@@ -494,3 +532,27 @@ def test_zoom_render_fixed_crops_temporal(monkeypatch, tmp_path):
     out_frames, out_duration = _probe_video(ffprobe, out, tmp_path)
     assert out_frames == src_frames, (out_frames, src_frames)
     assert abs(out_duration - src_duration) <= 0.1, (out_duration, src_duration)
+
+    pan = float(first_sendcmd_overlay_x(str(crop)))
+    for shot, t, color in zip(plan.shots, SHOT_TIMES, SHOT_COLORS):
+        centroid = _marker_centroid(_raw_frame_at(ffmpeg, out, t, tmp_path), color)
+        expected = _expected_marker_position(shot, pan)
+        assert _marker_in_frame(centroid, expected), (color, centroid, expected)
+
+    # Negative control: with crop updates disabled every shot keeps the first
+    # full-frame window, so the zoomed shots' markers land in the wrong place.
+    plain_vf = compile_plan(
+        [], "center_crop", "subs.ass", sendcmd_path="crop.txt",
+    )[0]
+    plain_out = tmp_path / "plain.mp4"
+    plain_render = _render_zoom(ffmpeg, plain_vf, tmp_path, plain_out, 4.5)
+    assert plain_render.returncode == 0, plain_render.stderr
+    failed: list[tuple[int, tuple[float, float] | None, tuple[float, float]]] = []
+    for i, (shot, t, color) in enumerate(zip(plan.shots, SHOT_TIMES, SHOT_COLORS)):
+        centroid = _marker_centroid(_raw_frame_at(ffmpeg, plain_out, t, tmp_path), color)
+        expected = _expected_marker_position(shot, pan)
+        if not _marker_in_frame(centroid, expected):
+            failed.append((i, centroid, expected))
+    print(f"[negative control] shots failing geometric check with crop updates "
+          f"disabled: {len(failed)}/3 -> {failed}")
+    assert failed, "disabling the crop updates did not fail the geometric check"

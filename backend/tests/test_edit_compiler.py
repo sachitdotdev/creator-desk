@@ -18,7 +18,17 @@ from app.services.edit_compiler import (
 
 
 def _ffmpeg() -> str | None:
-    return shutil.which("ffmpeg") or (str(FFMPEG_PATH) if FFMPEG_PATH else None)
+    """Resolve an FFmpeg executable from PATH or the configured FFMPEG_PATH.
+
+    A configured *path* may be a bare command name (``ffmpeg``) or an
+    executable path; ``shutil.which`` validates both. Return None when neither
+    source points at a runnable executable so tests skip cleanly.
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    configured = str(FFMPEG_PATH) if FFMPEG_PATH else ""
+    return shutil.which(configured) if configured else None
 
 
 HAVE_FFMPEG = _ffmpeg() is not None
