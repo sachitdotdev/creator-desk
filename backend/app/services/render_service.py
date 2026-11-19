@@ -148,31 +148,109 @@ def resolve_caption_style(template_config: dict | None, frame_height: int = 1920
     }
 
 
-def wrap_caption_text(text: str, max_chars: int = CAPTION_WRAP_CHARS,
-                      max_lines: int = CAPTION_MAX_LINES) -> str:
-    """Word-wrap a dialogue to at most ``max_lines`` ASS lines (``\\N``)."""
+# Width estimation is deliberately conservative: at the real (bold) font size
+# a line may occupy at most 95% of the usable width. ``CAPTION_WRAP_CHARS``
+# stays as an upper bound on line length, but rendered width decides wrapping.
+CAPTION_WIDTH_SAFETY = 0.95
+_CAPTION_NARROW = set(".,:;!|'\"`()[]{}-… ")
+_CAPTION_WIDE = set("MW@%")
+
+
+def _char_width_em(ch: str) -> float:
+    """Rough per-glyph advance in em units (dependency-free, conservative)."""
+    if ch.isspace():
+        return 0.28
+    if ch in _CAPTION_NARROW:
+        return 0.30
+    if ch.isdigit():
+        return 0.56
+    if ch.isupper():
+        return 0.85 if ch in _CAPTION_WIDE else 0.72
+    return 0.54
+
+
+def estimate_caption_width(text: str, font_size: int, bold: bool = CAPTION_BOLD) -> float:
+    """Estimated rendered width of ``text`` in pixels at the given font size."""
+    factor = 1.08 if bold else 1.0
+    return sum(_char_width_em(ch) for ch in str(text)) * float(font_size) * factor
+
+
+def _caption_max_width_px() -> float:
+    return (1080 - 2 * CAPTION_MARGIN_LR) * CAPTION_WIDTH_SAFETY
+
+
+def wrap_caption_lines(
+    text: str,
+    max_chars: int = CAPTION_WRAP_CHARS,
+    *,
+    font_size: int | None = None,
+    bold: bool = CAPTION_BOLD,
+) -> list[str]:
+    """Split text into ASS lines that fit the frame width. Never drops words."""
     words = str(text).split()
     if not words:
-        return ""
-    if not CAPTION_WORD_WRAP or max_lines < 1:
-        return " ".join(words)
+        return []
+    if not CAPTION_WORD_WRAP:
+        return [" ".join(words)]
+    if font_size is None:
+        font_size = round(CAPTION_FONT_SIZE_PCT * 1920)
+    max_width = _caption_max_width_px()
+    char_limit = max(1, int(max_chars))
 
     lines: list[str] = []
     current = ""
     for word in words:
         candidate = f"{current} {word}".strip()
-        if current and len(candidate) > max(1, max_chars):
+        fits = (len(candidate) <= char_limit
+                and estimate_caption_width(candidate, font_size, bold) <= max_width)
+        if current and not fits:
             lines.append(current)
             current = word
         else:
             current = candidate
     if current:
         lines.append(current)
+    return lines
 
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        lines[-1] = f"{lines[-1].rstrip()}…"
-    return "\\N".join(lines)
+
+def wrap_caption_text(text: str, max_chars: int = CAPTION_WRAP_CHARS,
+                      max_lines: int = CAPTION_MAX_LINES,
+                      *, font_size: int | None = None,
+                      bold: bool = CAPTION_BOLD) -> str:
+    """Word-wrap a dialogue into ``\\N``-separated lines (no truncation).
+
+    ``max_lines`` is retained for callers/signature compatibility; the line
+    limit is enforced by splitting a chunk into extra timed dialogues in
+    ``_build_ass`` instead of discarding words here.
+    """
+    if max_lines < 1:
+        return " ".join(str(text).split())
+    return "\\N".join(wrap_caption_lines(text, max_chars, font_size=font_size, bold=bold))
+
+
+def split_caption_chunks(words: list[str], style: dict) -> list[list[str]]:
+    """Group a chunk's words so each group wraps within ``max_lines`` lines.
+
+    A single over-wide word is kept intact in its own group; it is never split
+    or dropped. Short chunks produce exactly one group (unchanged behaviour).
+    """
+    max_lines = max(1, int(style.get("max_lines", CAPTION_MAX_LINES)))
+    font_size = int(style.get("size", round(CAPTION_FONT_SIZE_PCT * 1920)))
+    bold = int(style.get("bold", 0)) != 0
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for word in words:
+        candidate = current + [word]
+        lines = wrap_caption_lines(" ".join(candidate), font_size=font_size, bold=bold)
+        if current and len(lines) > max_lines:
+            groups.append(current)
+            current = [word]
+        else:
+            current = candidate
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _effective_loudness_target_tp() -> float:
@@ -592,17 +670,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             current_time = seg_start
 
             for chunk in chunks:
-                chunk_text = wrap_caption_text(" ".join(chunk), max_lines=style["max_lines"])
-
                 # Calculate exact proportional time for this chunk
                 chunk_duration = total_duration * (len(chunk) / total_words)
 
                 # Force the chunk to end exactly at the segment end
                 chunk_end = min(seg_end, current_time + chunk_duration)
 
-                start_str = self._format_time(current_time)
-                end_str = self._format_time(chunk_end)
-                ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{chunk_text}")
+                # A chunk that wraps past max_lines becomes several timed
+                # dialogues. Timing stays word-proportional, non-overlapping,
+                # and the last sub-dialogue ends exactly at chunk_end, so the
+                # original time span is unchanged and no word is lost.
+                groups = split_caption_chunks(chunk, style)
+                t = current_time
+                for idx, group in enumerate(groups):
+                    group_end = (
+                        chunk_end if idx == len(groups) - 1
+                        else min(chunk_end, t + chunk_duration * len(group) / len(chunk))
+                    )
+                    group_text = wrap_caption_text(
+                        " ".join(group), font_size=style["size"], bold=style["bold"] != 0,
+                    )
+                    start_str = self._format_time(t)
+                    end_str = self._format_time(group_end)
+                    ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{group_text}")
+                    t = group_end
                 current_time = chunk_end
 
         ass_content = ass_header + "\n".join(ass_lines)
