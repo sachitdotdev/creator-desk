@@ -98,3 +98,7 @@ backend/assets/models/*.caffemodel
 Start-OpenHands.bat
 backend/fix_paths.py
 script.py
+
+# Proprietary Monotype font: kept on disk for local renders but never published.
+# The repository ships the SIL OFL 1.1 Anton font instead (see docs/ASSETS.md).
+backend/assets/fonts/impact.ttf
