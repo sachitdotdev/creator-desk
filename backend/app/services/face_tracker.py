@@ -582,6 +582,28 @@ class ZoomPlan:
     shots: list[dict]
 
 
+def _overlay_pans(sendcmd_path: str) -> list[tuple[float, float]]:
+    """Read ``(time, overlay x)`` pairs from a crop sendcmd file.
+
+    The pan values are the *actual* overlay translation applied by the base
+    crop, including its edge clamping. The zoom window must be positioned in
+    the vertical frame that pan produced, not in source-pixel coordinates.
+    """
+    pans: list[tuple[float, float]] = []
+    try:
+        lines = Path(sendcmd_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return pans
+    for line in lines:
+        parts = line.strip().rstrip(";").split()
+        if len(parts) >= 4 and parts[1] == "overlay" and parts[2] == "x":
+            try:
+                pans.append((float(parts[0]), float(parts[3])))
+            except ValueError:
+                continue
+    return pans
+
+
 def compute_zoom_window(
     face_height_px: float,
     face_center_x_px: float,
@@ -589,6 +611,7 @@ def compute_zoom_window(
     source_width: int,
     source_height: int,
     *,
+    pan_x: float = 0.0,
     output_width: int = 1080,
     output_height: int = 1920,
     target_pct: float = FACE_ZOOM_TARGET_PCT,
@@ -598,9 +621,12 @@ def compute_zoom_window(
 ) -> ZoomWindow:
     """Pure zoom-window math for one shot.
 
-    ``face_height_px`` and the center are SOURCE pixels. The base full-height
-    crop maps the whole source height to ``output_height``, so a face already
-    at/above ``target_pct`` of the output yields zoom 1.0 (close-ups unchanged).
+    ``face_height_px`` and the center are SOURCE pixels. ``pan_x`` is the
+    overlay translation (already clamped by the tracker) that the base crop
+    applies before this second crop. Adding it maps the face into
+    ``output_width`` x ``output_height`` coordinates, which is the frame the
+    zoom window actually operates on. A face already at/above ``target_pct``
+    of the output yields zoom 1.0 (close-ups unchanged).
     """
     base_scale = output_height / float(source_height)
     face_frac = max(0.0, float(face_height_px)) / float(source_height)
@@ -626,12 +652,16 @@ def compute_zoom_window(
     crop_w = min(crop_w, output_width - (output_width % 2))
     crop_h = min(crop_h, output_height - (output_height % 2))
 
-    cx = float(face_center_x_px) * base_scale
+    # The zoom crop runs AFTER the overlay pan and the 1080x1920 base crop, so
+    # the face must be expressed in vertical-frame coordinates here. The pan
+    # already contains the tracker's edge clamping; re-clamping crop_x below
+    # keeps the window inside the same frame.
+    cx = float(face_center_x_px) * base_scale + float(pan_x)
     cy = float(face_center_y_px) * base_scale
     # Keep headroom above the face in the FINAL frame, then centre on its face.
     face_h_final = float(face_height_px) * base_scale * zoom
     desired_center_y = headroom_pct * output_height + face_h_final / 2.0
-    crop_x = cx - output_width / (2.0 * zoom)
+    crop_x = cx - crop_w / 2.0
     crop_y = cy - desired_center_y / zoom
     crop_x = max(0.0, min(float(output_width - crop_w), crop_x))
     crop_y = max(0.0, min(float(output_height - crop_h), crop_y))
@@ -651,12 +681,18 @@ def plan_shot_zooms(
     duration: float,
     source_width: int,
     source_height: int,
+    pans: list[float] | None = None,
     **kwargs,
 ) -> list[ZoomWindow]:
-    """One constant zoom window per shot, from the tracker's face bboxes."""
+    """One constant zoom window per shot, from the tracker's face bboxes.
+
+    ``pans`` holds the median overlay x in effect during each shot (same
+    boundaries). Those vertical-frame coordinates are what the zoom crop sees.
+    """
     boundaries = [0.0] + [float(c) for c in cuts if 0.0 < float(c) < duration] + [float(duration)]
     windows: list[ZoomWindow] = []
-    for start, end in itertools.pairwise(boundaries):
+    for i, (start, end) in enumerate(itertools.pairwise(boundaries)):
+        pan = float(pans[i]) if pans is not None and i < len(pans) else 0.0
         faces = [
             r for r in records
             if r.get("sampled", True) and r.get("detected") and r.get("bbox")
@@ -665,7 +701,7 @@ def plan_shot_zooms(
         if not faces:
             windows.append(compute_zoom_window(
                 0.0, source_width / 2.0, source_height / 2.0,
-                source_width, source_height, **kwargs,
+                source_width, source_height, pan_x=pan, **kwargs,
             ))
             continue
         heights = [float(r["bbox"][3]) - float(r["bbox"][1]) for r in faces]
@@ -673,7 +709,7 @@ def plan_shot_zooms(
         cys = [(float(r["bbox"][1]) + float(r["bbox"][3])) / 2.0 for r in faces]
         windows.append(compute_zoom_window(
             statistics.median(heights), statistics.median(cxs), statistics.median(cys),
-            source_width, source_height, **kwargs,
+            source_width, source_height, pan_x=pan, **kwargs,
         ))
     return windows
 
@@ -708,11 +744,23 @@ def generate_zoom_sendcmd_file(
         return ZoomPlan(active=False, initial=None, shots=[])
     source_width, source_height = dims
     cuts = detect_cuts(video_path, start_time, duration, FACE_CUT_THRESHOLD)
-    windows = plan_shot_zooms(records, cuts, duration, source_width, source_height)
+    boundaries = [0.0] + [float(c) for c in cuts if 0.0 < float(c) < duration] + [float(duration)]
+
+    # Use the pan actually applied during each shot (median when it varies),
+    # including the tracker's edge clamping, so the zoom window is centred on
+    # the face's post-overlay position.
+    overlay_pans = _overlay_pans(crop_sendcmd_path)
+    shot_pans: list[float] = []
+    for start, end in itertools.pairwise(boundaries):
+        values = [x for t, x in overlay_pans if start <= t < end]
+        shot_pans.append(statistics.median(values) if values else 0.0)
+
+    windows = plan_shot_zooms(
+        records, cuts, duration, source_width, source_height, pans=shot_pans,
+    )
     if not any(w.zoom > 1.0 for w in windows):
         return ZoomPlan(active=False, initial=None, shots=[])
 
-    boundaries = [0.0] + [float(c) for c in cuts if 0.0 < float(c) < duration] + [float(duration)]
     lines: list[str] = []
     shots: list[dict] = []
     for start, end, window in zip(boundaries, boundaries[1:], windows):
@@ -722,10 +770,10 @@ def generate_zoom_sendcmd_file(
         # sendcmd requires a timestamp on EVERY line; multiple commands on one
         # line are not accepted (the first target is reused as a start time).
         lines.extend([
-            f"{start:.3f} zc w {window.crop_w};",
-            f"{start:.3f} zc h {window.crop_h};",
-            f"{start:.3f} zc x {window.crop_x};",
-            f"{start:.3f} zc y {window.crop_y};",
+            f"{start:.3f} crop@zc w {window.crop_w};",
+            f"{start:.3f} crop@zc h {window.crop_h};",
+            f"{start:.3f} crop@zc x {window.crop_x};",
+            f"{start:.3f} crop@zc y {window.crop_y};",
         ])
         shots.append({
             "start": round(start, 3), "end": round(end, 3),
