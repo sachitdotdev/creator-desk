@@ -207,7 +207,7 @@ CAPTION_ALIGNMENT = int(os.getenv("CAPTION_ALIGNMENT", "2"))                   #
 CAPTION_MARGIN_LR = int(os.getenv("CAPTION_MARGIN_LR", "40"))
 CAPTION_MAX_LINES = int(os.getenv("CAPTION_MAX_LINES", "2"))
 CAPTION_WORD_WRAP = os.getenv("CAPTION_WORD_WRAP", "true").strip().lower() in ("1", "true", "yes", "on")
-CAPTION_WRAP_CHARS = int(os.getenv("CAPTION_WRAP_CHARS", "18"))                # chars per line at default size
+CAPTION_WRAP_CHARS = int(os.getenv("CAPTION_WRAP_CHARS", "15"))                # chars per line at default size
 
 # --------------------------------------------------------------------------- Per-shot wide-shot face zoom
 # Constant within a shot, changes only at detected cuts. The base full-height

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 from pathlib import Path
 
 import pytest
 
+from app.core.config import CAPTION_FONT_SIZE_PCT, CAPTION_MARGIN_LR, CAPTION_WRAP_CHARS
 from app.services.render_service import (
     RenderService,
     resolve_caption_style,
@@ -88,3 +90,29 @@ def test_wrapping_is_word_based_and_capped_at_two_lines():
     assert lines[-1].endswith("…")
     # Short captions are untouched.
     assert wrap_caption_text("short hook", max_chars=18) == "short hook"
+
+
+def test_default_wrap_fits_three_word_hooks_in_two_lines():
+    # The old 18-char wrap left lines such as "God hates someone." overflowing
+    # the 1080 px frame at the new 125 px bold style (1231 px measured).
+    assert CAPTION_WRAP_CHARS <= 15
+    for text in ("God hates someone.", "looking down and", "where they would",
+                 "like violent ways.", "blasphemous piece of"):
+        lines = wrap_caption_text(text).split("\\N")
+        assert len(lines) <= 2, (text, lines)
+        assert all(len(line) <= CAPTION_WRAP_CHARS for line in lines), (text, lines)
+        assert not any(line.endswith("…") for line in lines), (text, lines)
+
+
+def test_wrapped_lines_fit_frame_width_with_bold_font():
+    ImageFont = pytest.importorskip("PIL.ImageFont")
+    size = round(CAPTION_FONT_SIZE_PCT * 1920)
+    font_path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arialbd.ttf"
+    if not font_path.is_file():
+        pytest.skip("bold Arial font file unavailable")
+    font = ImageFont.truetype(str(font_path), size)
+    available = 1080 - 2 * CAPTION_MARGIN_LR
+    for text in ("God hates someone.", "looking down and", "where they would",
+                 "like violent ways.", "blasphemous piece of"):
+        for line in wrap_caption_text(text).split("\\N"):
+            assert font.getlength(line) <= available, (text, line, font.getlength(line))
