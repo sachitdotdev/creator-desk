@@ -92,9 +92,16 @@ launcher.env.local.bat
 # Unreferenced by the app; kept on disk but not published.
 backend/assets/models/*.onnx
 backend/assets/models/*.caffemodel
+# Caffe deploy proto for the untracked res10 SSD model; no license header and
+# unreferenced by the app. Kept locally, never published.
+backend/assets/models/deploy.prototxt
 
 # One-off host scripts that contain personal/absolute developer paths.
 # Kept locally for reference but never published.
 Start-OpenHands.bat
 backend/fix_paths.py
 script.py
+
+# Proprietary Monotype font: kept on disk for local renders but never published.
+# The repository ships the SIL OFL 1.1 Anton font instead (see docs/ASSETS.md).
+backend/assets/fonts/impact.ttf

@@ -78,7 +78,7 @@ DEFAULT_TEMPLATES: list[dict[str, Any]] = [
                 "highlight": "#FFD700",
             },
             "caption": {
-                "font": "Impact",
+                "font": "Anton",
                 "size": 60,
                 "bold": 1,
                 "primary": "&H00D7FF&",
@@ -93,7 +93,7 @@ DEFAULT_TEMPLATES: list[dict[str, Any]] = [
                 "kinetic": True,
             },
             "title": {
-                "font": "Impact",
+                "font": "Anton",
                 "size": 44,
                 "bold": 1,
                 "color": "&H00D7FF&",
@@ -104,7 +104,7 @@ DEFAULT_TEMPLATES: list[dict[str, Any]] = [
             },
             "watermark": {
                 "text": "CREATOR DESK",
-                "font": "Impact",
+                "font": "Anton",
                 "size": 26,
                 "color": "&H00D7FF&",
                 "opacity": 0.5,

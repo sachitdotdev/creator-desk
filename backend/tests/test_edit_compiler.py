@@ -167,7 +167,7 @@ def test_sfx_relative_delay_above_ceiling_is_skipped(monkeypatch, tmp_path, capl
 # --------------------------------------------------------------------------- caption font safety
 
 def test_escape_fontfile_option_ordinary_path():
-    assert escape_fontfile_option("/opt/fonts/impact.ttf") == "/opt/fonts/impact.ttf"
+    assert escape_fontfile_option("/opt/fonts/anton.ttf") == "/opt/fonts/anton.ttf"
 
 
 def test_escape_fontfile_option_windows_drive_letter():
@@ -180,8 +180,8 @@ def test_escape_fontfile_option_with_spaces():
 
 
 def test_escape_fontfile_option_with_apostrophe():
-    assert (escape_fontfile_option("C:/Temp/O'Neil/impact.ttf")
-            == "C\\\\:/Temp/O\\\\\\'Neil/impact.ttf")
+    assert (escape_fontfile_option("C:/Temp/O'Neil/anton.ttf")
+            == "C\\\\:/Temp/O\\\\\\'Neil/anton.ttf")
 
 
 def test_invalid_caption_font_falls_back_with_warning(monkeypatch, caplog):
@@ -202,8 +202,8 @@ def test_invalid_caption_font_falls_back_with_warning(monkeypatch, caplog):
 def test_drawtext_fontfile_survives_apostrophe_in_directory(tmp_path):
     font_dir = tmp_path / "O'Neil"
     font_dir.mkdir()
-    shutil.copy(FONT_DIR / "impact.ttf", font_dir / "impact.ttf")
-    font = font_dir / "impact.ttf"
+    shutil.copy(FONT_DIR / "Anton-Regular.ttf", font_dir / "Anton-Regular.ttf")
+    font = font_dir / "Anton-Regular.ttf"
 
     vf = (f"drawtext=fontfile={escape_fontfile_option(font.as_posix())}"
           ":text=HELLO:fontsize=48:fontcolor=white:box=1:boxcolor=black")

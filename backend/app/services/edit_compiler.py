@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 # Legacy constant kept for callers that only need to know a font is bundled.
 # Actual font selection goes through resolve_font_file() so no developer path
 # is ever baked into a render.
-FONT_PATH = "impact.ttf"
+FONT_PATH = "Anton-Regular.ttf"
 _SFX_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 # A sane ceiling for an SFX's CLIP-RELATIVE delay: beyond this the LLM output
 # is junk (overflowing floats) and the event is skipped. Absolute source
