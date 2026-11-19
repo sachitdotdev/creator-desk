@@ -1,11 +1,19 @@
+import os
+from pathlib import Path
+
 from datasets import load_dataset
 from llmcompressor import oneshot
 from llmcompressor.modifiers.awq import AWQModifier
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Configuration ---
-model_id = "Orion-zhen/Meissa-Qwen2.5-7B-Instruct"
-output_dir = "C:/Projects Openhands/Active/Creator Desk/models/meissa-7b-awq"
+# Override with MEISSA_MODEL_ID / MEISSA_OUTPUT_DIR, or edit the defaults below.
+# All defaults are public model IDs or repo-relative paths: never a personal
+# absolute path.
+model_id = os.environ.get("MEISSA_MODEL_ID", "Orion-zhen/Meissa-Qwen2.5-7B-Instruct")
+output_dir = os.environ.get("MEISSA_OUTPUT_DIR") or str(
+    Path(__file__).resolve().parent / "assets" / "models" / "meissa-7b-awq"
+)
 
 # --- 1. Load Model and Tokenizer ---
 print(f"Loading model: {model_id}")
